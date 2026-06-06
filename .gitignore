@@ -1,0 +1,41 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+.Python
+
+# Generated large artifacts — regenerable from Photos library
+embeddings/*.npy
+embeddings/*.json
+
+# User-specific metadata (UUIDs, paths, scores tied to one library)
+metadata/inventory.csv
+metadata/nsfw_scores.csv
+metadata/persons_per_photo.json
+metadata/assignments.csv
+metadata/multi_assignments.csv
+metadata/cluster_meta.json
+metadata/empty_albums.txt
+metadata/renames.csv
+
+# User decisions — personal, should not be committed
+metadata/corrections.csv
+
+# Library-specific status snapshot (contains personal album names + counts)
+STATUS.md
+
+# Generated review output
+review/
+
+# Runtime state
+PIPELINE_STATUS
+logs/
+osxphotos_crash.log
+previews/
+temp/
+test_run_*/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/

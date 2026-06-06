@@ -1,0 +1,17 @@
+# Core ML
+torch>=2.12
+torchvision>=0.27
+open_clip_torch>=3.3
+Pillow>=12
+numpy>=2
+
+# NSFW detection
+nudenet>=3.4
+onnxruntime>=1.26
+
+# Clustering / retraining
+scikit-learn>=1.9
+
+# Photos.app access is installed separately via pipx:
+#   pipx install osxphotos
+#   pipx inject osxphotos photoscript
