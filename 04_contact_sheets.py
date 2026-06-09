@@ -893,45 +893,50 @@ if inbox_rows:
     <button id="inbox-next-btn" onclick="inboxNextPage()"
       style="background:#333;color:#eee;border:0;padding:4px 10px;border-radius:3px;cursor:pointer;font-size:12px">Next →</button>
   </div>
-  <p id="inbox-commit-hint" style="display:none;margin:8px 0 0;color:#7ac;font-size:12px">
-    ✓ All sorted manually — click ⚡ Auto-classify above to commit photos to their target albums.</p>
 </div>
 <script>
 let _iboxPage = 0;
 const _iboxCells = [...document.querySelectorAll('#inbox-grid .cell')];
 function _renderInbox() {{
   const uncorrected = _iboxCells.filter(c => !c.classList.contains('corrected'));
+  const total = _iboxCells.length;
+  const sortedN = total - uncorrected.length;
+  const section = document.getElementById('inbox-section');
+
+  if (uncorrected.length === 0) {{
+    // All sorted — hide the section entirely; inbox-bar is the leading UI
+    if (section) section.style.display = 'none';
+    const countEl = document.getElementById('inbox-count');
+    if (countEl) countEl.textContent = '0';
+    const mx = document.getElementById('inbox-meta-extra');
+    if (mx) mx.textContent = total > 0 ? ' · ✓ Inbox all sorted — click ⚡ to commit' : '';
+    return;
+  }}
+
+  // Show section with photo grid
+  if (section) section.style.display = '';
   const totalPages = Math.max(1, Math.ceil(uncorrected.length / {_ibox_ps}));
   if (_iboxPage >= totalPages) _iboxPage = Math.max(0, totalPages - 1);
   _iboxCells.forEach(c => {{ c.style.display = 'none'; }});
   uncorrected.slice(_iboxPage * {_ibox_ps}, (_iboxPage + 1) * {_ibox_ps}).forEach(c => {{ c.style.display = ''; }});
-  const sortedN = _iboxCells.length - uncorrected.length;
+
   const sortedNote = sortedN > 0 ? ' · ✓ ' + sortedN + ' sorted' : '';
-  document.getElementById('inbox-page-info').textContent = uncorrected.length === 0
-    ? '✓ All ' + _iboxCells.length + ' photos sorted manually'
-    : 'Page ' + (_iboxPage + 1) + ' of ' + totalPages + ' · ' + uncorrected.length + ' unsorted' + sortedNote;
+  document.getElementById('inbox-page-info').textContent =
+    'Page ' + (_iboxPage + 1) + ' of ' + totalPages + ' · ' + uncorrected.length + ' unsorted' + sortedNote;
   document.getElementById('inbox-prev-btn').disabled = _iboxPage === 0;
   document.getElementById('inbox-next-btn').disabled = _iboxPage >= totalPages - 1;
-  // Sync count badge + meta line + commit hint
+
+  // Sync count badge + meta
   const countEl = document.getElementById('inbox-count');
   if (countEl) countEl.textContent = uncorrected.length;
   const mx = document.getElementById('inbox-meta-extra');
-  if (mx) mx.textContent = uncorrected.length > 0
-    ? ' · ' + uncorrected.length + ' unsorted in Inbox' + (sortedN > 0 ? ' · ✓ ' + sortedN + ' sorted' : '')
-    : (sortedN > 0 ? ' · ✓ Inbox all sorted — click ⚡ to commit' : '');
-  const hint = document.getElementById('inbox-commit-hint');
-  if (hint) hint.style.display = uncorrected.length === 0 && _iboxCells.length > 0 ? '' : 'none';
-  const grid = document.getElementById('inbox-grid');
-  if (grid) grid.style.display = uncorrected.length === 0 ? 'none' : '';
-  // Update section header to reflect sorted state
+  if (mx) mx.textContent = ' · ' + uncorrected.length + ' unsorted in Inbox' + sortedNote;
+
+  // Update section title
   const titleEl = document.getElementById('inbox-section-title');
-  const subEl = document.getElementById('inbox-section-sub');
-  if (titleEl) titleEl.textContent = uncorrected.length === 0
-    ? '✓ ' + _iboxCells.length + ' photos sorted — waiting to be committed'
-    : '📥 ' + uncorrected.length + ' of ' + _iboxCells.length + ' photos not yet classified';
-  if (subEl) subEl.textContent = uncorrected.length === 0
-    ? 'Click ⚡ Auto-classify / Commit above to move them to their target albums.'
-    : 'Click to assign an album · or use ⚡ Auto-classify above';
+  if (titleEl) titleEl.textContent = sortedN > 0
+    ? '📥 ' + uncorrected.length + ' of ' + total + ' photos not yet classified'
+    : '📥 ' + uncorrected.length + ' photos not yet classified';
 }}
 function inboxPrevPage() {{ if (_iboxPage > 0) {{ _iboxPage--; _renderInbox(); }} }}
 function inboxNextPage() {{

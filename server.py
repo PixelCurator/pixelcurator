@@ -285,6 +285,10 @@ class Handler(BaseHTTPRequestHandler):
                                     path_by_uuid[r["uuid"]] = r["derivative_path"]
                     if mode == "--process":
                         reload_state()
+                    if mode == "--detect" and count > 0:
+                        # Regenerate index.html so inline inbox grid reflects new photos
+                        subprocess.run([sys.executable, str(ROOT / "04_contact_sheets.py")],
+                                       capture_output=True, timeout=120)
                     payload = json.dumps({"type": "done", "count": count})
                 else:
                     payload = json.dumps({"type": "error", "msg": f"exit {proc.returncode}"})
