@@ -811,7 +811,7 @@ if inbox_rows:
             f'</div>'
         )
     parts.append(f"""  </div>
-  <div style="margin-top:10px;display:flex;align-items:center;gap:10px">
+  <div id="inbox-pagination" style="margin-top:10px;display:flex;align-items:center;gap:10px">
     <button id="inbox-prev-btn" onclick="inboxPrevPage()"
       style="background:#333;color:#eee;border:0;padding:4px 10px;border-radius:3px;cursor:pointer;font-size:12px">← Prev</button>
     <span id="inbox-page-info" style="color:#888;font-size:12px"></span>
@@ -846,6 +846,8 @@ function _renderInbox() {{
   const sortedNote = sortedN > 0 ? ' · ✓ ' + sortedN + ' sorted' : '';
   document.getElementById('inbox-page-info').textContent =
     'Page ' + (_iboxPage + 1) + ' of ' + totalPages + ' · ' + uncorrected.length + ' unsorted' + sortedNote;
+  const pag = document.getElementById('inbox-pagination');
+  if (pag) pag.style.display = totalPages <= 1 ? 'none' : '';
   document.getElementById('inbox-prev-btn').disabled = _iboxPage === 0;
   document.getElementById('inbox-next-btn').disabled = _iboxPage >= totalPages - 1;
 
