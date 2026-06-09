@@ -163,8 +163,10 @@ def write_assignments(clf, emb, uuids_emb, corrections, dry_run=False):
     stats = Counter()
     rows = []
     for uid, pred, conf in zip(uuids_emb, predicted, confidences):
-        if uid in corrections:
+        if uid in corrections and corrections[uid] not in SKIP_ALBUMS:
             # Ground-truth override — always goes to corrected album at full confidence
+            # SKIP_ALBUMS (e.g. Thrash) are NOT baked into assignments.csv;
+            # they live only in corrections.csv and are applied via current_album()
             album = corrections[uid]
             final_conf = 1.0
             source = "correction"

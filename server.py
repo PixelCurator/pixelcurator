@@ -71,7 +71,10 @@ if not CORRECTIONS.exists():
 corrections = {}
 with CORRECTIONS.open() as f:
     for r in csv.DictReader(f):
-        corrections[r["uuid"]] = r["new_album"]
+        if r["new_album"]:            # non-empty = active correction
+            corrections[r["uuid"]] = r["new_album"]
+        else:
+            corrections.pop(r["uuid"], None)   # empty = tombstone from empty-thrash
 
 # Embeddings for similarity
 print(f"Loading embeddings...", flush=True)
@@ -319,8 +322,14 @@ class Handler(BaseHTTPRequestHandler):
             )
             if rc.returncode != 0:
                 self._json({"ok": False, "error": rc.stderr[:500]}); return
-            # Remove from in-memory corrections and mark as deleted
+            # Write tombstone entries so Thrash doesn't reappear after server restart,
+            # then remove from in-memory corrections dict
             with _lock:
+                ts = dt.datetime.utcnow().isoformat()
+                with CORRECTIONS.open("a", newline="") as f:
+                    w = csv.writer(f)
+                    for u in thrash_uids:
+                        w.writerow([u, "", ts, "emptied"])  # empty new_album = tombstone
                 for u in thrash_uids:
                     corrections.pop(u, None)
             self._json({"ok": True, "deleted": len(thrash_uids), "message": rc.stdout.strip()}); return
