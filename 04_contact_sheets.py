@@ -944,7 +944,19 @@ async function inboxBatchTrash() {{
     body: JSON.stringify({{uuids, new_album:'Thrash', source:'trash'}})
   }});
   const j = await r.json();
-  if (j.ok) {{ for (const u of uuids) markCellCorrected(u, 'Thrash', true); inboxDeselectAll(); }}
+  if (j.ok) {{
+    for (const u of uuids) markCellCorrected(u, 'Thrash', true);
+    inboxDeselectAll();
+    // Refresh thrash counter
+    const t = await fetch('http://127.0.0.1:8765/api/thrash-count');
+    const tj = await t.json();
+    const el = document.getElementById('thrash-count');
+    if (el) el.textContent = tj.count;
+    const btn = document.getElementById('empty-thrash-btn');
+    if (btn) btn.textContent = 'Empty Thrash (' + tj.count + ')';
+    const bar = document.getElementById('thrash-bar');
+    if (bar) bar.style.display = tj.count === 0 ? 'none' : '';
+  }}
 }}
 // Click in inbox grid = toggle selection (not open modal)
 document.getElementById('inbox-grid').addEventListener('click', function(e) {{
