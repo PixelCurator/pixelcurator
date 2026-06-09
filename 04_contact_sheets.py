@@ -124,9 +124,9 @@ HTML_HEAD = """<!doctype html>
   #modal .similar-grid .cell .score{{position:absolute;top:2px;left:2px;background:rgba(0,0,0,0.7);color:#fff;font-size:9px;padding:1px 3px;border-radius:2px}}
   #modal .closebtn{{position:absolute;top:12px;right:16px;background:none;color:#888;font-size:24px;border:0;cursor:pointer}}
   #modal .album-badge{{display:inline-block;background:#333;color:#aaa;padding:2px 8px;border-radius:3px;font-size:11px;margin-left:6px}}
-  details summary::-webkit-details-marker{{display:none}}
-  details[open] summary .toggle-arrow{{transform:rotate(90deg)}}
-  details summary .toggle-arrow{{display:inline-block;transition:transform 0.15s;font-size:11px;color:#555}}
+  details>summary{{cursor:pointer;padding:8px 10px;background:#1a1a1a;border-radius:4px;font-size:13px;color:#888;user-select:none;margin-top:16px}}
+  details>summary::marker{{color:#4a8;font-size:14px}}
+  details>summary::-webkit-details-marker{{color:#4a8;font-size:14px}}
 </style></head><body>
 <div class="nav">{nav}</div>
 <h1>{title}</h1>
@@ -683,11 +683,9 @@ parts.append('</table>')
 unsure_total = sum(len(u) for _, u in unsure_albums)
 parts.append(
     f'<details style="margin-top:16px">'
-    f'<summary style="cursor:pointer;list-style:none;display:flex;align-items:center;gap:8px;padding:8px 10px;'
-    f'background:#1a1a1a;border-radius:4px;font-size:13px;color:#888;user-select:none">'
-    f'<span class="toggle-arrow">▶</span>'
-    f'<b style="color:#777">Unsure Albums</b>'
-    f'<span style="color:#555;font-size:12px">— {len(unsure_albums)} albums · {unsure_total:,} photos at 50–80% confidence</span>'
+    f'<summary>'
+    f'<b style="color:#aaa">Unsure Albums</b>'
+    f' <span style="color:#666;font-size:12px">— {len(unsure_albums)} albums · {unsure_total:,} photos at 50–80% confidence</span>'
     f'</summary>'
     f'<p style="font-size:12px;color:#555;margin:8px 0">Photos assigned at 50–80% confidence. '
     f'Review these to improve accuracy — use <b>Confirm</b> or reassign.</p>'
