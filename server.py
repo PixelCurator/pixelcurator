@@ -320,6 +320,45 @@ class Handler(BaseHTTPRequestHandler):
             lines = [l for l in rc.stdout.splitlines() if l.strip()]
             self._json({"ok": True, "loaded": n, "log": lines[-30:]}); return
 
+        if self.path == "/api/merge-album":
+            body = self._read_body()
+            source = body.get("source", "").strip()
+            target = body.get("target", "").strip()
+            if not source or not target or source == target:
+                self._json({"error": "source and target required and must differ"}, 400); return
+            # Map source → target, source-unsure → target-unsure
+            name_map = {source: target, source + "-unsure": target + "-unsure"}
+            # Rewrite assignments.csv
+            with ASSIGN.open() as f:
+                reader = csv.DictReader(f); fields = reader.fieldnames; rows = list(reader)
+            merged = 0
+            for r in rows:
+                if r["album"] in name_map:
+                    r["album"] = name_map[r["album"]]; merged += 1
+            with ASSIGN.open("w", newline="") as f:
+                w = csv.DictWriter(f, fieldnames=fields); w.writeheader(); w.writerows(rows)
+            # Rewrite corrections.csv
+            with CORRECTIONS.open() as f:
+                cr = csv.DictReader(f); cfields = cr.fieldnames; crows = list(cr)
+            for r in crows:
+                if r["new_album"] in name_map:
+                    r["new_album"] = name_map[r["new_album"]]
+            with CORRECTIONS.open("w", newline="") as f:
+                w = csv.DictWriter(f, fieldnames=cfields); w.writeheader(); w.writerows(crows)
+            # Update in-memory state
+            with _lock:
+                for uid in list(assigned):
+                    if assigned[uid] in name_map: assigned[uid] = name_map[assigned[uid]]
+                for uid in list(corrections):
+                    if corrections[uid] in name_map: corrections[uid] = name_map[corrections[uid]]
+            # Remove source HTML files
+            for src in name_map:
+                stale = REVIEW / (_safe_fn(src) + ".html")
+                if stale.exists(): stale.unlink()
+            subprocess.run([sys.executable, str(ROOT / "04_contact_sheets.py")],
+                           capture_output=True, timeout=120)
+            self._json({"ok": True, "merged": merged, "map": name_map}); return
+
         if self.path == "/api/rename-album":
             body = self._read_body()
             old_name = body.get("old_name", "").strip()

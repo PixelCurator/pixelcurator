@@ -684,15 +684,19 @@ for album, uids in main_albums:
 
     esc = html.escape(album).replace("'", "\\'")
     edit_btn = (f'<button onclick="startRename(\'{esc}\',this)" title="Rename album" '
-                f'style="background:none;border:none;color:#444;cursor:pointer;'
-                f'padding:2px;font-size:12px;line-height:1">✏️</button>')
+                f'style="background:none;border:none;color:#555;cursor:pointer;'
+                f'padding:2px 3px;font-size:12px;line-height:1">✏️</button>')
+    merge_btn = (f'<button onclick="startMerge(\'{esc}\',this)" title="Merge into another album" '
+                 f'style="background:none;border:none;color:#555;cursor:pointer;'
+                 f'padding:2px 3px;font-size:12px;line-height:1">⊕</button>')
 
     parts.append(
         f'<tr style="border-bottom:1px solid #222">'
         f'<td style="padding:6px 8px">{toggle}'
         f'<a href="{fn}" style="color:#7ac">{html.escape(album)}</a></td>'
         f'<td style="text-align:right;padding:6px 8px">{len(uids):,}</td>'
-        f'<td style="width:28px;padding:2px 4px;text-align:center">{edit_btn}</td></tr>'
+        f'<td style="width:52px;padding:2px 4px;text-align:right;white-space:nowrap">'
+        f'{edit_btn}{merge_btn}</td></tr>'
     )
     if unsure_row_html:
         parts.append(unsure_row_html)
@@ -734,12 +738,45 @@ async function doRename(oldName, newName, input, btn, link) {
     body: JSON.stringify({old_name: oldName, new_name: newName})
   });
   const j = await r.json();
-  if (j.ok) {
-    location.reload();
-  } else {
-    alert('Rename failed: ' + (j.error || 'unknown'));
-    input.disabled = false; input.style.opacity = '1';
-  }
+  if (j.ok) { location.reload(); }
+  else { alert('Rename failed: ' + (j.error || 'unknown')); input.disabled=false; input.style.opacity='1'; }
+}
+function startMerge(albumName, btn) {
+  const actionCell = btn.closest('td');
+  if (actionCell.querySelector('select')) return;
+  // Collect all main album names from the table (exclude self and -unsure rows)
+  const allAlbums = [...document.querySelectorAll('table tr td:first-child > a')]
+    .map(a => a.textContent.trim())
+    .filter(n => !n.endsWith('-unsure') && n !== albumName);
+  const sel = document.createElement('select');
+  sel.style.cssText = 'position:absolute;right:0;top:100%;background:#1a1a1a;color:#eee;border:1px solid #e8a;padding:4px 6px;border-radius:4px;font-size:12px;z-index:50;min-width:180px;max-height:300px;overflow-y:auto';
+  sel.innerHTML = '<option value="">— merge into… —</option>' +
+    allAlbums.map(n => `<option value="${n}">${n}</option>`).join('');
+  sel.onchange = () => {
+    const target = sel.value;
+    if (!target) return;
+    const hasUnsure = document.getElementById('ur-' + albumName.replace(/ /g,'_').replace(/[^a-zA-Z0-9_()]/g,'_'));
+    const unsureNote = hasUnsure ? `\\n${albumName}-unsure → ${target}-unsure` : '';
+    if (confirm(`Merge "${albumName}" into "${target}"?${unsureNote}\\n\\nAll photos will be moved. "${albumName}" will be removed. This cannot be undone easily.`)) {
+      doMerge(albumName, target, sel);
+    } else { sel.remove(); }
+  };
+  sel.onkeydown = (e) => { if (e.key === 'Escape') sel.remove(); };
+  sel.onblur = () => setTimeout(() => sel.remove(), 200);
+  // Position relative to action cell
+  actionCell.style.position = 'relative';
+  actionCell.appendChild(sel);
+  sel.focus();
+}
+async function doMerge(source, target, sel) {
+  sel.disabled = true;
+  const r = await fetch('http://127.0.0.1:8765/api/merge-album', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({source, target})
+  });
+  const j = await r.json();
+  if (j.ok) { location.reload(); }
+  else { alert('Merge failed: ' + (j.error || 'unknown')); sel.remove(); }
 }
 </script>
 """)
