@@ -700,12 +700,8 @@ async function runInboxPhase(phase) {{
 if inbox_rows:
     _ibox_ps = 48
     parts.append(f"""
-<div id="inbox-section" style="margin:-1px 0 12px;padding:14px 16px;background:#111d2a;border:1px solid #7ac;border-top:none;border-radius:0 0 6px 6px">
-  <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px;flex-wrap:wrap">
-    <span id="inbox-section-title" style="font-size:14px;font-weight:600;color:#7ac">📥 {len(inbox_rows):,} photos not yet classified</span>
-    <span id="inbox-section-sub" style="font-size:12px;color:#555">Click to assign an album · or use ⚡ Auto-classify above</span>
-  </div>
-  <div id="inbox-grid" class="grid">""")
+<div id="inbox-section" style="margin:-1px 0 12px;padding:10px 16px 14px;background:#111d2a;border:1px solid #7ac;border-top:none;border-radius:0 0 6px 6px">
+  <div id="inbox-grid" class="grid" style="margin-top:4px">""")
     for _r in inbox_rows:
         _uid = _r["uuid"]
         _fn = html.escape(_r.get("original_filename", "")[:20])
@@ -762,11 +758,6 @@ function _renderInbox() {{
   if (countEl) countEl.textContent = uncorrected.length;
   const mx = document.getElementById('inbox-meta-extra');
   if (mx) mx.textContent = ' · ' + uncorrected.length + ' unsorted in Inbox' + sortedNote;
-
-  const titleEl = document.getElementById('inbox-section-title');
-  if (titleEl) titleEl.textContent = sortedN > 0
-    ? '📥 ' + uncorrected.length + ' of ' + total + ' photos not yet classified'
-    : '📥 ' + uncorrected.length + ' photos not yet classified';
 }}
 function inboxPrevPage() {{ if (_iboxPage > 0) {{ _iboxPage--; _renderInbox(); }} }}
 function inboxNextPage() {{
@@ -954,7 +945,13 @@ unsure_by_main = {a[:-len('-unsure')]: (a, u) for a, u in unsure_albums}
 
 
 unsure_total = sum(len(u) for _, u in unsure_albums)
-parts.append(f'<p style="color:#666;font-size:11px;margin:0 0 6px">'
+parts.append(
+    '<div style="margin:24px 0 10px;display:flex;align-items:center;gap:10px">'
+    '<span style="font-size:12px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.06em">Albums</span>'
+    '<div style="flex:1;height:1px;background:#252525"></div>'
+    '</div>'
+)
+parts.append(f'<p style="color:#555;font-size:11px;margin:0 0 6px">'
              f'{len(main_albums)} albums · {len(unsure_albums)} with unsure photos ({unsure_total:,} total)</p>')
 parts.append('<table style="width:100%;border-collapse:collapse;margin-bottom:32px">')
 parts.append(TABLE_HEADER)
