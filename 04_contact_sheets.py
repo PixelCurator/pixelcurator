@@ -490,6 +490,68 @@ def render_sheet(album: str, uids: list) -> str:
     parts.append(sugg_html)
     if album == "Thrash":
         parts.append('<style>.cell.corrected{display:block!important;opacity:1;border-color:#c55!important}</style>')
+        parts.append("""
+<div style="margin:0 0 16px;display:flex;align-items:center;gap:12px">
+  <button id="empty-thrash-btn" onclick="openEmptyThrash()"
+    style="background:#c55;color:#fff;border:0;padding:8px 18px;border-radius:4px;cursor:pointer;font-weight:600;font-size:14px">
+    🗑 Empty Thrash (<span id="thrash-count">…</span>)
+  </button>
+</div>
+<div id="empty-thrash-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:200;align-items:center;justify-content:center">
+  <div style="background:#1a1a1a;border:1px solid #c55;border-radius:8px;padding:28px 32px;max-width:420px;width:100%">
+    <h2 style="margin:0 0 10px;color:#c55">⚠️ Empty Thrash</h2>
+    <p id="empty-thrash-msg" style="color:#ccc;font-size:14px;margin:0 0 16px"></p>
+    <p style="color:#888;font-size:12px;margin:0 0 12px">This moves photos to <b>Recently Deleted</b> in Photos.app. iCloud will sync this to all devices. You have 30 days to recover them.</p>
+    <p style="color:#888;font-size:12px;margin:0 0 16px">Type <b>DELETE</b> to confirm:</p>
+    <input id="empty-thrash-confirm" type="text" placeholder="DELETE"
+      style="background:#222;color:#eee;border:1px solid #555;padding:8px;border-radius:4px;font-size:14px;width:100%;box-sizing:border-box;margin-bottom:14px">
+    <div>
+      <button onclick="doEmptyThrash()" style="background:#c55;color:#fff;border:0;padding:8px 18px;border-radius:4px;cursor:pointer;font-weight:600;margin-right:8px">Delete from Photos.app</button>
+      <button onclick="closeEmptyThrash()" style="background:#444;color:#eee;border:0;padding:8px 14px;border-radius:4px;cursor:pointer">Cancel</button>
+    </div>
+    <div id="empty-thrash-status" style="margin-top:10px;font-size:13px;color:#888"></div>
+  </div>
+</div>
+<script>
+(async () => {
+  const r = await fetch('http://127.0.0.1:8765/api/thrash-count');
+  const j = await r.json();
+  document.getElementById('thrash-count').textContent = j.count;
+})();
+function openEmptyThrash() {
+  const count = document.getElementById('thrash-count').textContent;
+  document.getElementById('empty-thrash-msg').textContent = count + ' photos will be moved to Recently Deleted in Photos.app.';
+  document.getElementById('empty-thrash-confirm').value = '';
+  document.getElementById('empty-thrash-status').textContent = '';
+  document.getElementById('empty-thrash-modal').style.display = 'flex';
+}
+function closeEmptyThrash() { document.getElementById('empty-thrash-modal').style.display = 'none'; }
+async function doEmptyThrash() {
+  if (document.getElementById('empty-thrash-confirm').value.trim() !== 'DELETE') {
+    document.getElementById('empty-thrash-status').textContent = 'Type DELETE to confirm.';
+    document.getElementById('empty-thrash-status').style.color = '#c55'; return;
+  }
+  document.getElementById('empty-thrash-status').textContent = 'Deleting…';
+  document.getElementById('empty-thrash-status').style.color = '#888';
+  const r = await fetch('http://127.0.0.1:8765/api/empty-thrash', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({confirm:'DELETE'})
+  });
+  const j = await r.json();
+  if (j.ok) {
+    document.getElementById('empty-thrash-status').textContent = '✓ ' + j.message;
+    document.getElementById('empty-thrash-status').style.color = '#4a8';
+    document.getElementById('thrash-count').textContent = '0';
+    document.getElementById('empty-thrash-btn').disabled = true;
+    setTimeout(() => { closeEmptyThrash(); location.href = '/'; }, 2000);
+  } else {
+    document.getElementById('empty-thrash-status').textContent = 'Error: ' + (j.error || 'unknown');
+    document.getElementById('empty-thrash-status').style.color = '#c55';
+  }
+}
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeEmptyThrash(); });
+</script>
+""")
     else:
         parts.append('<div class="legend">Confidence in top-right. Click image to open modal · corrected photos auto-hidden.</div>')
         parts.append('<div id="toggleBar"><span id="hiddenCount">0 corrected hidden</span> <button onclick="toggleCorrected()">Toggle visibility</button></div>')
