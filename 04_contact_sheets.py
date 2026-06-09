@@ -696,6 +696,86 @@ async function runInboxPhase(phase) {{
 }})();
 </script>
 """)
+# Inline inbox grid — directly below inbox-bar, visually connected
+if inbox_rows:
+    _ibox_ps = 48
+    parts.append(f"""
+<div id="inbox-section" style="margin:-1px 0 12px;padding:14px 16px;background:#111d2a;border:1px solid #7ac;border-top:none;border-radius:0 0 6px 6px">
+  <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px;flex-wrap:wrap">
+    <span id="inbox-section-title" style="font-size:14px;font-weight:600;color:#7ac">📥 {len(inbox_rows):,} photos not yet classified</span>
+    <span id="inbox-section-sub" style="font-size:12px;color:#555">Click to assign an album · or use ⚡ Auto-classify above</span>
+  </div>
+  <div id="inbox-grid" class="grid">""")
+    for _r in inbox_rows:
+        _uid = _r["uuid"]
+        _fn = html.escape(_r.get("original_filename", "")[:20])
+        _date = html.escape(_r.get("date", "")[:10])
+        _url = f"http://127.0.0.1:8765/img/{_uid}"
+        parts.append(
+            f'<div class="cell" data-uuid="{_uid}" data-conf="0" style="display:none">'
+            f'<img src="{_url}" loading="lazy">'
+            f'<span class="conf" style="background:#e8a;color:#000">new</span>'
+            f'<span class="info">{_fn} {_date} {html.escape(_uid[:8])}</span>'
+            f'<button class="trash-btn" onclick="trashOne(\'{_uid}\',event)" title="Move to Thrash">🗑</button>'
+            f'</div>'
+        )
+    parts.append(f"""  </div>
+  <div style="margin-top:10px;display:flex;align-items:center;gap:10px">
+    <button id="inbox-prev-btn" onclick="inboxPrevPage()"
+      style="background:#333;color:#eee;border:0;padding:4px 10px;border-radius:3px;cursor:pointer;font-size:12px">← Prev</button>
+    <span id="inbox-page-info" style="color:#888;font-size:12px"></span>
+    <button id="inbox-next-btn" onclick="inboxNextPage()"
+      style="background:#333;color:#eee;border:0;padding:4px 10px;border-radius:3px;cursor:pointer;font-size:12px">Next →</button>
+  </div>
+</div>
+<script>
+let _iboxPage = 0;
+const _iboxCells = [...document.querySelectorAll('#inbox-grid .cell')];
+function _renderInbox() {{
+  const uncorrected = _iboxCells.filter(c => !c.classList.contains('corrected'));
+  const total = _iboxCells.length;
+  const sortedN = total - uncorrected.length;
+  const section = document.getElementById('inbox-section');
+
+  if (uncorrected.length === 0) {{
+    if (section) section.style.display = 'none';
+    const countEl = document.getElementById('inbox-count');
+    if (countEl) countEl.textContent = '0';
+    const mx = document.getElementById('inbox-meta-extra');
+    if (mx) mx.textContent = total > 0 ? ' · ✓ Inbox all sorted — click ⚡ to commit' : '';
+    return;
+  }}
+
+  if (section) section.style.display = '';
+  const totalPages = Math.max(1, Math.ceil(uncorrected.length / {_ibox_ps}));
+  if (_iboxPage >= totalPages) _iboxPage = Math.max(0, totalPages - 1);
+  _iboxCells.forEach(c => {{ c.style.display = 'none'; }});
+  uncorrected.slice(_iboxPage * {_ibox_ps}, (_iboxPage + 1) * {_ibox_ps}).forEach(c => {{ c.style.display = ''; }});
+
+  const sortedNote = sortedN > 0 ? ' · ✓ ' + sortedN + ' sorted' : '';
+  document.getElementById('inbox-page-info').textContent =
+    'Page ' + (_iboxPage + 1) + ' of ' + totalPages + ' · ' + uncorrected.length + ' unsorted' + sortedNote;
+  document.getElementById('inbox-prev-btn').disabled = _iboxPage === 0;
+  document.getElementById('inbox-next-btn').disabled = _iboxPage >= totalPages - 1;
+
+  const countEl = document.getElementById('inbox-count');
+  if (countEl) countEl.textContent = uncorrected.length;
+  const mx = document.getElementById('inbox-meta-extra');
+  if (mx) mx.textContent = ' · ' + uncorrected.length + ' unsorted in Inbox' + sortedNote;
+
+  const titleEl = document.getElementById('inbox-section-title');
+  if (titleEl) titleEl.textContent = sortedN > 0
+    ? '📥 ' + uncorrected.length + ' of ' + total + ' photos not yet classified'
+    : '📥 ' + uncorrected.length + ' photos not yet classified';
+}}
+function inboxPrevPage() {{ if (_iboxPage > 0) {{ _iboxPage--; _renderInbox(); }} }}
+function inboxNextPage() {{
+  const uncorrected = _iboxCells.filter(c => !c.classList.contains('corrected'));
+  if (_iboxPage < Math.ceil(uncorrected.length / {_ibox_ps}) - 1) {{ _iboxPage++; _renderInbox(); }}
+}}
+_renderInbox();
+</script>
+""")
 # undo bar inserted above (before inbox bar)
 parts.append("""
 <div id="thrash-bar" style="margin:12px 0;padding:10px 14px;background:#2a1a1a;border:1px solid #c55;border-radius:6px;display:flex;align-items:center;gap:14px">
@@ -872,90 +952,6 @@ main_albums = [(a, u) for a, u in albums_sorted if not a.endswith('-unsure')]
 unsure_albums = [(a, u) for a, u in albums_sorted if a.endswith('-unsure')]
 unsure_by_main = {a[:-len('-unsure')]: (a, u) for a, u in unsure_albums}
 
-# Inline inbox grid above album table (paginated, 48 per page)
-if inbox_rows:
-    _ibox_ps = 48
-    parts.append(f"""
-<div id="inbox-section" style="margin:16px 0;padding:14px 16px;background:#111d2a;border:1px solid #4a7;border-radius:6px">
-  <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px;flex-wrap:wrap">
-    <span id="inbox-section-title" style="font-size:14px;font-weight:600;color:#7ac">📥 {len(inbox_rows):,} new photos — not yet classified</span>
-    <span id="inbox-section-sub" style="font-size:12px;color:#555">Click to assign an album · or use ⚡ Auto-classify above</span>
-  </div>
-  <div id="inbox-grid" class="grid">""")
-    for _r in inbox_rows:
-        _uid = _r["uuid"]
-        _fn = html.escape(_r.get("original_filename", "")[:20])
-        _date = html.escape(_r.get("date", "")[:10])
-        _url = f"http://127.0.0.1:8765/img/{_uid}"
-        parts.append(
-            f'<div class="cell" data-uuid="{_uid}" data-conf="0" style="display:none">'
-            f'<img src="{_url}" loading="lazy">'
-            f'<span class="conf" style="background:#e8a;color:#000">new</span>'
-            f'<span class="info">{_fn} {_date} {html.escape(_uid[:8])}</span>'
-            f'<button class="trash-btn" onclick="trashOne(\'{_uid}\',event)" title="Move to Thrash">🗑</button>'
-            f'</div>'
-        )
-    parts.append(f"""  </div>
-  <div style="margin-top:10px;display:flex;align-items:center;gap:10px">
-    <button id="inbox-prev-btn" onclick="inboxPrevPage()"
-      style="background:#333;color:#eee;border:0;padding:4px 10px;border-radius:3px;cursor:pointer;font-size:12px">← Prev</button>
-    <span id="inbox-page-info" style="color:#888;font-size:12px"></span>
-    <button id="inbox-next-btn" onclick="inboxNextPage()"
-      style="background:#333;color:#eee;border:0;padding:4px 10px;border-radius:3px;cursor:pointer;font-size:12px">Next →</button>
-  </div>
-</div>
-<script>
-let _iboxPage = 0;
-const _iboxCells = [...document.querySelectorAll('#inbox-grid .cell')];
-function _renderInbox() {{
-  const uncorrected = _iboxCells.filter(c => !c.classList.contains('corrected'));
-  const total = _iboxCells.length;
-  const sortedN = total - uncorrected.length;
-  const section = document.getElementById('inbox-section');
-
-  if (uncorrected.length === 0) {{
-    // All sorted — hide the section entirely; inbox-bar is the leading UI
-    if (section) section.style.display = 'none';
-    const countEl = document.getElementById('inbox-count');
-    if (countEl) countEl.textContent = '0';
-    const mx = document.getElementById('inbox-meta-extra');
-    if (mx) mx.textContent = total > 0 ? ' · ✓ Inbox all sorted — click ⚡ to commit' : '';
-    return;
-  }}
-
-  // Show section with photo grid
-  if (section) section.style.display = '';
-  const totalPages = Math.max(1, Math.ceil(uncorrected.length / {_ibox_ps}));
-  if (_iboxPage >= totalPages) _iboxPage = Math.max(0, totalPages - 1);
-  _iboxCells.forEach(c => {{ c.style.display = 'none'; }});
-  uncorrected.slice(_iboxPage * {_ibox_ps}, (_iboxPage + 1) * {_ibox_ps}).forEach(c => {{ c.style.display = ''; }});
-
-  const sortedNote = sortedN > 0 ? ' · ✓ ' + sortedN + ' sorted' : '';
-  document.getElementById('inbox-page-info').textContent =
-    'Page ' + (_iboxPage + 1) + ' of ' + totalPages + ' · ' + uncorrected.length + ' unsorted' + sortedNote;
-  document.getElementById('inbox-prev-btn').disabled = _iboxPage === 0;
-  document.getElementById('inbox-next-btn').disabled = _iboxPage >= totalPages - 1;
-
-  // Sync count badge + meta
-  const countEl = document.getElementById('inbox-count');
-  if (countEl) countEl.textContent = uncorrected.length;
-  const mx = document.getElementById('inbox-meta-extra');
-  if (mx) mx.textContent = ' · ' + uncorrected.length + ' unsorted in Inbox' + sortedNote;
-
-  // Update section title
-  const titleEl = document.getElementById('inbox-section-title');
-  if (titleEl) titleEl.textContent = sortedN > 0
-    ? '📥 ' + uncorrected.length + ' of ' + total + ' photos not yet classified'
-    : '📥 ' + uncorrected.length + ' photos not yet classified';
-}}
-function inboxPrevPage() {{ if (_iboxPage > 0) {{ _iboxPage--; _renderInbox(); }} }}
-function inboxNextPage() {{
-  const uncorrected = _iboxCells.filter(c => !c.classList.contains('corrected'));
-  if (_iboxPage < Math.ceil(uncorrected.length / {_ibox_ps}) - 1) {{ _iboxPage++; _renderInbox(); }}
-}}
-_renderInbox();
-</script>
-""")
 
 unsure_total = sum(len(u) for _, u in unsure_albums)
 parts.append(f'<p style="color:#666;font-size:11px;margin:0 0 6px">'
