@@ -365,8 +365,41 @@ class Handler(BaseHTTPRequestHandler):
             new_name = body.get("new_name", "").strip()
             if not old_name or not new_name:
                 self._json({"error": "old_name and new_name required"}, 400); return
-            if old_name == new_name:
+            if old_name.strip().lower() == new_name.strip().lower():
                 self._json({"ok": True, "renamed": 0}); return
+            # If new_name matches an existing album (case-insensitive), redirect to merge
+            existing_lower = {a.lower(): a for a in all_albums()}
+            canonical = existing_lower.get(new_name.lower())
+            if canonical and canonical.lower() != old_name.lower():
+                # Silently redirect: rename becomes a merge into the canonical album
+                body2 = {"source": old_name, "target": canonical}
+                # Inline merge logic (reuse same block via adjusted body)
+                source, target = old_name, canonical
+                name_map2 = {source: target, source + "-unsure": target + "-unsure"}
+                with ASSIGN.open() as f:
+                    reader = csv.DictReader(f); fields2 = reader.fieldnames; rows2 = list(reader)
+                merged2 = 0
+                for r in rows2:
+                    if r["album"] in name_map2: r["album"] = name_map2[r["album"]]; merged2 += 1
+                with ASSIGN.open("w", newline="") as f:
+                    w = csv.DictWriter(f, fieldnames=fields2); w.writeheader(); w.writerows(rows2)
+                with CORRECTIONS.open() as f:
+                    cr2 = csv.DictReader(f); cfields2 = cr2.fieldnames; crows2 = list(cr2)
+                for r in crows2:
+                    if r["new_album"] in name_map2: r["new_album"] = name_map2[r["new_album"]]
+                with CORRECTIONS.open("w", newline="") as f:
+                    w = csv.DictWriter(f, fieldnames=cfields2); w.writeheader(); w.writerows(crows2)
+                with _lock:
+                    for uid in list(assigned):
+                        if assigned[uid] in name_map2: assigned[uid] = name_map2[assigned[uid]]
+                    for uid in list(corrections):
+                        if corrections[uid] in name_map2: corrections[uid] = name_map2[corrections[uid]]
+                for src in name_map2:
+                    stale = REVIEW / (_safe_fn(src) + ".html")
+                    if stale.exists(): stale.unlink()
+                subprocess.run([sys.executable, str(ROOT / "04_contact_sheets.py")],
+                               capture_output=True, timeout=120)
+                self._json({"ok": True, "action": "merged", "target": canonical, "merged": merged2}); return
             # Build mapping: also rename the -unsure variant
             name_map = {old_name: new_name}
             if not old_name.endswith("-unsure"):
