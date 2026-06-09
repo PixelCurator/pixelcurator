@@ -49,6 +49,15 @@ with INV_CSV.open() as f:
         uid_to_filename[r["uuid"]] = r["original_filename"]
         uid_to_date[r["uuid"]] = r["date"]
 
+# Also include inbox paths so trashed/corrected inbox photos are viewable
+INBOX_CSV = ROOT / "metadata" / "inbox.csv"
+if INBOX_CSV.exists():
+    for r in csv.DictReader(INBOX_CSV.open()):
+        if r.get("has_local_derivative") == "True" and r.get("derivative_path"):
+            uid_to_path[r["uuid"]] = r["derivative_path"]
+            uid_to_filename[r["uuid"]] = r.get("original_filename", "")
+            uid_to_date[r["uuid"]] = r.get("date", "")
+
 # Load assignments
 log.info("Loading assignments...")
 album_to_uids = defaultdict(list)
@@ -97,6 +106,9 @@ if CORRECTIONS_CSV.exists():
     album_to_uids = defaultdict(list, {k: v for k, v in album_to_uids.items() if v})
     if _moved:
         log.info(f"  Applied {len(_corr)} corrections ({_moved} photos moved between albums)")
+
+    # Collect Thrash UUIDs for later — Thrash.html is generated after render_sheet is defined
+    _thrash_uids = [uid for uid, alb in _corr.items() if alb == "Thrash"]
 
 # Cluster suggestions
 cluster_meta = {}
@@ -483,7 +495,7 @@ def render_sheet(album: str, uids: list) -> str:
         path = uid_to_path.get(uid, "")
         if not path:
             continue
-        _, conf, src = uid_to_assign[uid]
+        _, conf, src = uid_to_assign.get(uid, ("", 0.0, "inbox"))
         conf_label = f"{conf:.2f}" if src != "cluster" else src
         fn = uid_to_filename.get(uid, "")[:20]
         date = uid_to_date.get(uid, "")[:10]
@@ -554,6 +566,14 @@ if inbox_rows:
     inbox_parts.append('</div>')
     inbox_parts.append(HTML_TAIL)
     (REVIEW_DIR / "Inbox.html").write_text("".join(inbox_parts))
+
+# Thrash.html — generated separately, excluded from album list but linked from index
+_thrash_uids = locals().get("_thrash_uids", [])
+if _thrash_uids:
+    log.info(f"Writing Thrash.html ({len(_thrash_uids)} photos)...")
+    (REVIEW_DIR / "Thrash.html").write_text(render_sheet("Thrash", _thrash_uids))
+elif (REVIEW_DIR / "Thrash.html").exists():
+    (REVIEW_DIR / "Thrash.html").unlink()
 
 # Index page
 log.info("Writing index.html...")
