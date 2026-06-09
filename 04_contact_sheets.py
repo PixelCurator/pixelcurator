@@ -595,7 +595,7 @@ async function doUndoRedo(action) {
 """)
 parts.append(f"""
 <div id="inbox-bar" style="margin:6px 0 8px;padding:10px 14px;background:#1a1f2a;border:1px solid #7ac;border-radius:6px;display:flex;align-items:center;gap:14px;flex-wrap:wrap">
-  <span style="font-size:13px">📥 <b>Inbox:</b> <span id="inbox-count">{"⏳" if not inbox_rows else len(inbox_rows)}</span> new photos not yet classified</span>
+  <span id="inbox-label" style="font-size:13px">📥 <b>Inbox:</b> <span id="inbox-count">{"⏳" if not inbox_rows else len(inbox_rows)}</span> new photos not yet classified</span>
   <button id="inbox-scan-btn" onclick="runInboxPhase('detect')"
     style="background:#2a4a6a;color:#7ac;border:1px solid #7ac;padding:5px 12px;border-radius:4px;cursor:pointer;font-size:12px;font-weight:600">
     🔍 Scan for new
@@ -669,7 +669,13 @@ async function runInboxPhase(phase) {{
     const j = await r.json();
     // Counts: j.count=unsorted, j.total=all inbox, j.sorted=manually assigned
     if (j.total === 0) {{
-      document.getElementById('inbox-bar').style.display = 'none';
+      // Empty inbox: muted bar, scan button stays visible for manual refresh
+      const bar = document.getElementById('inbox-bar');
+      bar.style.borderColor = '#2a2a2a';
+      bar.style.background = '#141414';
+      const lbl = document.getElementById('inbox-label');
+      if (lbl) lbl.innerHTML = '<span style="color:#555;font-size:12px">📥 Inbox: no new photos</span>';
+      document.getElementById('inbox-process-btn').style.display = 'none';
       return;
     }}
     document.getElementById('inbox-count').textContent = j.count;
