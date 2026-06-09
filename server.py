@@ -254,12 +254,20 @@ class Handler(BaseHTTPRequestHandler):
                 count = 0
                 for line in proc.stdout:
                     line = line.rstrip()
-                    if line:
-                        if line.startswith("RESULT:"):
-                            count = int(line.split(":")[1])
+                    if not line:
+                        continue
+                    if line.startswith("RESULT:"):
+                        count = int(line.split(":")[1])
                         payload = json.dumps({"type": "log", "msg": line})
-                        self.wfile.write(f"data: {payload}\n\n".encode())
-                        self.wfile.flush()
+                    elif line.startswith("PROGRESS:") and mode == "--detect":
+                        pp = line.split(":")
+                        payload = json.dumps({"type": "progress",
+                                              "current": int(pp[1]),
+                                              "total": int(pp[2])})
+                    else:
+                        payload = json.dumps({"type": "log", "msg": line})
+                    self.wfile.write(f"data: {payload}\n\n".encode())
+                    self.wfile.flush()
                 proc.wait()
                 if proc.returncode == 0:
                     # Reload paths from inbox.csv so thumbnails are immediately servable

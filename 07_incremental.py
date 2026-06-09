@@ -69,11 +69,12 @@ print(f"Known UUIDs in inventory: {len(known)}", flush=True)
 print("Loading PhotosDB…", flush=True)
 db = osxphotos.PhotosDB()
 all_photos = db.photos(images=True, intrash=False)
-print(f"Total photos in library: {len(all_photos)}", flush=True)
+total = len(all_photos)
+print(f"Total photos in library: {total}", flush=True)
 
 FIELDS = ["uuid", "original_filename", "date", "derivative_path", "has_local_derivative"]
 new_photos = []
-for p in all_photos:
+for idx, p in enumerate(all_photos):
     if p.uuid in known:
         continue
     path = p.path
@@ -86,6 +87,9 @@ for p in all_photos:
         "derivative_path": path,
         "has_local_derivative": "True",
     })
+    if idx % 1000 == 0:
+        print(f"PROGRESS:{idx}:{total}", flush=True)
+print(f"PROGRESS:{total}:{total}", flush=True)
 
 with out.open("w", newline="") as f:
     w = csv.DictWriter(f, fieldnames=FIELDS)

@@ -304,6 +304,10 @@ async function loadSimilar() {
   const j = await r.json();
   // Only show photos NOT already in the target album
   similarItems = j.similar.filter(s => s.album !== target).slice(0, 24);
+  if (similarItems.length === 0) {
+    setStatus('No similar photos found in other albums.', '#888');
+    return;
+  }
   const grid = document.getElementById('m-similar');
   grid.innerHTML = '';
   for (const s of similarItems) {
@@ -515,13 +519,12 @@ if inbox_rows:
 log.info("Writing index.html...")
 parts = [HTML_HEAD.format(
     title="Photo Sort — Review Index",
-    meta=f"Total {len(uid_to_assign)} photos across {len(albums_sorted)} albums.",
+    meta=f"Total {len(uid_to_assign):,} photos across {len(albums_sorted)} albums.&nbsp;<span id='inbox-meta-extra' style='color:#7ac'></span>",
     nav='<span style="color:#aaa;font-weight:600;font-size:14px">Photo Sort — Review</span>',
 )]
 parts.append(f"""
 <div id="inbox-bar" style="margin:12px 0 8px;padding:10px 14px;background:#1a1f2a;border:1px solid #7ac;border-radius:6px;display:flex;align-items:center;gap:14px;flex-wrap:wrap">
   <span style="font-size:13px">📥 <b>Inbox:</b> <span id="inbox-count">{"⏳" if not inbox_rows else len(inbox_rows)}</span> new photos not yet classified</span>
-  {"<a href='/Inbox.html' style='color:#7ac;font-size:13px;text-decoration:none'>View Inbox →</a>" if inbox_rows else ""}
   <button id="inbox-scan-btn" onclick="runInboxPhase('detect')"
     style="background:#2a4a6a;color:#7ac;border:1px solid #7ac;padding:5px 12px;border-radius:4px;cursor:pointer;font-size:12px;font-weight:600">
     🔍 Scan for new
@@ -532,21 +535,35 @@ parts.append(f"""
   </button>
   <span id="inbox-status" style="font-size:12px;color:#888"></span>
 </div>
+<div id="inbox-scan-progress" style="display:none;margin:0 0 6px;padding:8px 12px;background:#111;border-radius:4px">
+  <progress id="inbox-scan-bar" max="100" value="0" style="width:100%;height:8px;accent-color:#7ac"></progress>
+  <div id="inbox-scan-text" style="font-size:11px;color:#666;margin-top:3px;font-family:monospace"></div>
+</div>
 <div id="inbox-log-wrap" style="display:none;margin:0 0 8px;padding:8px 12px;background:#111;border-radius:4px;font-size:11px;font-family:monospace;color:#666;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"></div>
 <script>
 async function runInboxPhase(phase) {{
   const btn = document.getElementById(phase === 'detect' ? 'inbox-scan-btn' : 'inbox-process-btn');
   const st = document.getElementById('inbox-status');
   const logWrap = document.getElementById('inbox-log-wrap');
+  const progressWrap = document.getElementById('inbox-scan-progress');
+  const progressBar = document.getElementById('inbox-scan-bar');
+  const progressText = document.getElementById('inbox-scan-text');
   btn.disabled = true;
-  st.textContent = phase === 'detect' ? 'Scanning Photos.app… (~30s)' : 'Embedding + classifying…';
+  st.textContent = phase === 'detect' ? 'Scanning Photos.app…' : 'Embedding + classifying…';
   st.style.color = '#888';
-  logWrap.style.display = 'block';
+  if (phase === 'detect') {{
+    progressWrap.style.display = 'block';
+    progressBar.value = 0; progressBar.max = 100;
+    progressText.textContent = 'Starting scan…';
+  }} else {{
+    logWrap.style.display = 'block';
+  }}
   const es = new EventSource('http://127.0.0.1:8765/api/inbox-' + phase + '-stream');
   es.onmessage = function(e) {{
     const ev = JSON.parse(e.data);
     if (ev.type === 'done') {{
-      st.textContent = '✓ Done' + (ev.count !== undefined ? ' — ' + ev.count + ' photos' : '') + '. Refreshing…';
+      if (phase === 'detect') {{ progressBar.value = progressBar.max; progressText.textContent = 'Scan complete!'; }}
+      st.textContent = '✓ Done' + (ev.count !== undefined ? ' — ' + ev.count + ' new photos' : '') + '. Refreshing…';
       st.style.color = '#4a8';
       es.close();
       setTimeout(() => location.reload(), 1200);
@@ -555,6 +572,14 @@ async function runInboxPhase(phase) {{
       st.style.color = '#c55';
       es.close();
       btn.disabled = false;
+    }} else if (ev.type === 'progress') {{
+      if (ev.total > 0) {{
+        progressBar.max = ev.total; progressBar.value = ev.current;
+        const pct = Math.round(ev.current / ev.total * 100);
+        progressText.textContent = 'Scanning… ' + ev.current.toLocaleString() + ' / ' + ev.total.toLocaleString() + ' (' + pct + '%)';
+        const mx = document.getElementById('inbox-meta-extra');
+        if (mx) mx.textContent = ' · scanning ' + pct + '%…';
+      }}
     }} else {{
       logWrap.textContent = ev.msg.replace(/^.*? (INFO|WARNING) /, '');
     }}
@@ -567,6 +592,17 @@ async function runInboxPhase(phase) {{
     }}
   }};
 }}
+(async () => {{
+  try {{
+    const r = await fetch('http://127.0.0.1:8765/api/inbox-count');
+    const j = await r.json();
+    document.getElementById('inbox-count').textContent = j.count;
+    const mx = document.getElementById('inbox-meta-extra');
+    if (mx && j.count > 0) {{ mx.textContent = ' · ' + j.count.toLocaleString() + ' new in Inbox'; }}
+    const pb = document.getElementById('inbox-process-btn');
+    if (j.count > 0) {{ pb.style.opacity = '1'; pb.style.pointerEvents = ''; pb.textContent = '⚡ Auto-classify (' + j.count + ' photos)'; }}
+  }} catch(e) {{}}
+}})();
 </script>
 """)
 parts.append("""
@@ -774,6 +810,57 @@ TABLE_HEADER = ('<tr style="background:#1a1a1a">'
 main_albums = [(a, u) for a, u in albums_sorted if not a.endswith('-unsure')]
 unsure_albums = [(a, u) for a, u in albums_sorted if a.endswith('-unsure')]
 unsure_by_main = {a[:-len('-unsure')]: (a, u) for a, u in unsure_albums}
+
+# Inline inbox grid above album table (paginated, 48 per page)
+if inbox_rows:
+    _ibox_ps = 48
+    parts.append(f"""
+<div id="inbox-section" style="margin:16px 0;padding:14px 16px;background:#111d2a;border:1px solid #4a7;border-radius:6px">
+  <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px;flex-wrap:wrap">
+    <span style="font-size:14px;font-weight:600;color:#7ac">📥 {len(inbox_rows):,} new photos — not yet classified</span>
+    <span style="font-size:12px;color:#555">Click to assign an album · or use ⚡ Auto-classify above</span>
+  </div>
+  <div id="inbox-grid" class="grid">""")
+    for _r in inbox_rows:
+        _uid = _r["uuid"]
+        _fn = html.escape(_r.get("original_filename", "")[:20])
+        _date = html.escape(_r.get("date", "")[:10])
+        _url = f"http://127.0.0.1:8765/img/{_uid}"
+        parts.append(
+            f'<div class="cell" data-uuid="{_uid}" data-conf="0" style="display:none">'
+            f'<img src="{_url}" loading="lazy">'
+            f'<span class="conf" style="background:#e8a;color:#000">new</span>'
+            f'<span class="info">{_fn} {_date} {html.escape(_uid[:8])}</span>'
+            f'<button class="trash-btn" onclick="trashOne(\'{_uid}\',event)" title="Move to Thrash">🗑</button>'
+            f'</div>'
+        )
+    parts.append(f"""  </div>
+  <div style="margin-top:10px;display:flex;align-items:center;gap:10px">
+    <button id="inbox-prev-btn" onclick="inboxPrevPage()"
+      style="background:#333;color:#eee;border:0;padding:4px 10px;border-radius:3px;cursor:pointer;font-size:12px">← Prev</button>
+    <span id="inbox-page-info" style="color:#888;font-size:12px"></span>
+    <button id="inbox-next-btn" onclick="inboxNextPage()"
+      style="background:#333;color:#eee;border:0;padding:4px 10px;border-radius:3px;cursor:pointer;font-size:12px">Next →</button>
+  </div>
+</div>
+<script>
+let _iboxPage = 0;
+const _iboxCells = [...document.querySelectorAll('#inbox-grid .cell')];
+const _iboxPages = Math.ceil(_iboxCells.length / {_ibox_ps});
+function _renderInbox() {{
+  _iboxCells.forEach((c, i) => {{
+    c.style.display = (i >= _iboxPage * {_ibox_ps} && i < (_iboxPage + 1) * {_ibox_ps}) ? '' : 'none';
+  }});
+  document.getElementById('inbox-page-info').textContent =
+    'Page ' + (_iboxPage + 1) + ' of ' + _iboxPages + ' · ' + _iboxCells.length + ' photos';
+  document.getElementById('inbox-prev-btn').disabled = _iboxPage === 0;
+  document.getElementById('inbox-next-btn').disabled = _iboxPage >= _iboxPages - 1;
+}}
+function inboxPrevPage() {{ if (_iboxPage > 0) {{ _iboxPage--; _renderInbox(); }} }}
+function inboxNextPage() {{ if (_iboxPage < _iboxPages - 1) {{ _iboxPage++; _renderInbox(); }} }}
+_renderInbox();
+</script>
+""")
 
 unsure_total = sum(len(u) for _, u in unsure_albums)
 parts.append(f'<p style="color:#666;font-size:11px;margin:0 0 6px">'
