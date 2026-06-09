@@ -562,6 +562,101 @@ parts = [HTML_HEAD.format(
     meta=f"Total {len(uid_to_assign):,} photos across {len(albums_sorted)} albums.&nbsp;<span id='inbox-meta-extra' style='color:#7ac'></span>",
     nav='<span style="color:#aaa;font-weight:600;font-size:14px">Photo Sort — Review</span>',
 )]
+# Retrain bar — top of page
+parts.append("""
+<div id="retrain-bar" style="margin:8px 0 16px;padding:10px 14px;background:#1a2a1a;border:1px solid #4a8;border-radius:6px">
+  <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+    <span style="font-size:13px">&#x1F9E0; <b>Retrain:</b> <span id="corr-new">…</span> new corrections <span id="corr-total" style="color:#555;font-size:11px"></span></span>
+    <button id="retrain-btn" onclick="doRetrain()" style="background:#27ae60;color:#fff;border:0;padding:6px 14px;border-radius:4px;cursor:pointer;font-weight:600;font-size:13px">Retrain &amp; Refresh</button>
+    <span id="retrain-status" style="font-size:12px;color:#888"></span>
+  </div>
+  <div id="retrain-progress-wrap" style="display:none;margin-top:10px">
+    <progress id="retrain-progress" max="100" value="0" style="width:100%;height:10px;accent-color:#27ae60"></progress>
+    <div id="retrain-log" style="font-size:11px;color:#666;margin-top:4px;font-family:monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"></div>
+  </div>
+</div>
+<script>
+(async () => {
+  try {
+    const r = await fetch('http://127.0.0.1:8765/api/retrain-status');
+    const j = await r.json();
+    document.getElementById('corr-new').textContent = j.new_since_retrain;
+    document.getElementById('corr-total').textContent = j.last_retrain
+      ? `(${j.total} total, last retrain ${j.last_retrain.slice(0,10)})`
+      : `(${j.total} total, no retrain yet)`;
+    const btn = document.getElementById('retrain-btn');
+    if (j.new_since_retrain < 50) {
+      btn.title = `Only ${j.new_since_retrain} new corrections — threshold for a meaningful retrain is 200. Keep sorting!`;
+      btn.style.opacity = '0.45';
+    } else if (j.new_since_retrain < 200) {
+      btn.title = `${j.new_since_retrain}/200 new corrections — retrain works now but improves significantly at 200+.`;
+      btn.style.opacity = '0.75';
+    } else {
+      btn.title = `${j.new_since_retrain} new corrections — good time to retrain!`;
+      btn.style.boxShadow = '0 0 0 2px #27ae60';
+    }
+  } catch(e) { document.getElementById('corr-new').textContent = '?'; }
+})();
+function doRetrain() {
+  const btn = document.getElementById('retrain-btn');
+  const st = document.getElementById('retrain-status');
+  const wrap = document.getElementById('retrain-progress-wrap');
+  const bar = document.getElementById('retrain-progress');
+  const logEl = document.getElementById('retrain-log');
+  btn.disabled = true;
+  btn.textContent = 'Retraining…';
+  st.textContent = 'Do not close this tab.';
+  st.style.color = '#888';
+  wrap.style.display = 'block';
+  bar.value = 2;
+  const phases = [
+    ['Loading corrections', 5],
+    ['Loading original', 10],
+    ['Loading CLIP', 15],
+    ['Building training', 22],
+    ['Training Logistic', 32],
+    ['Predicting all', 55],
+    ['Backup', 60],
+    ['Wrote', 62],
+    ['Regenerating', 65],
+    ['Writing index', 95],
+    ['Retrain complete', 98],
+  ];
+  const es = new EventSource('http://127.0.0.1:8765/api/retrain-stream?regen=1');
+  es.onmessage = function(e) {
+    const ev = JSON.parse(e.data);
+    if (ev.type === 'done') {
+      bar.value = 100;
+      st.textContent = '✓ Done — ' + ev.loaded + ' photos reloaded. Refreshing…';
+      st.style.color = '#4a8';
+      logEl.textContent = '';
+      es.close();
+      setTimeout(() => location.reload(), 1800);
+    } else if (ev.type === 'error') {
+      st.textContent = 'Error — check server log';
+      st.style.color = '#c55';
+      logEl.textContent = ev.msg || '';
+      es.close();
+      btn.disabled = false;
+      btn.textContent = 'Retrain & Refresh';
+    } else {
+      const clean = ev.msg.replace(/^\\d{{4}}-\\d{{2}}-\\d{{2}} \\d{{2}}:\\d{{2}}:\\d{{2}},\\d{{3}} \\w+ /, '');
+      logEl.textContent = clean;
+      for (const [kw, pct] of phases) {
+        if (ev.msg.includes(kw) && bar.value < pct) {{ bar.value = pct; break; }}
+      }
+    }
+  };
+  es.onerror = function() {
+    if (bar.value < 100) {
+      st.textContent = 'Connection lost — retrain may still be running in background.';
+      st.style.color = '#c55';
+      es.close();
+    }
+  };
+}
+</script>
+""")
 parts.append("""
 <div id="undo-bar" style="margin:8px 0 6px;padding:7px 12px;background:#1a1a1a;border-radius:4px;display:flex;align-items:center;gap:10px;font-size:12px">
   <button id="undo-btn" onclick="doUndoRedo('undo')" disabled
@@ -839,101 +934,6 @@ document.addEventListener('keydown', e => { if (e.key === 'Escape') closeEmptyTh
 </script>
 """)
 
-# Retrain bar
-parts.append("""
-<div id="retrain-bar" style="margin:8px 0 16px;padding:10px 14px;background:#1a2a1a;border:1px solid #4a8;border-radius:6px">
-  <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
-    <span style="font-size:13px">&#x1F9E0; <b>Retrain:</b> <span id="corr-new">…</span> new corrections <span id="corr-total" style="color:#555;font-size:11px"></span></span>
-    <button id="retrain-btn" onclick="doRetrain()" style="background:#27ae60;color:#fff;border:0;padding:6px 14px;border-radius:4px;cursor:pointer;font-weight:600;font-size:13px">Retrain &amp; Refresh</button>
-    <span id="retrain-status" style="font-size:12px;color:#888"></span>
-  </div>
-  <div id="retrain-progress-wrap" style="display:none;margin-top:10px">
-    <progress id="retrain-progress" max="100" value="0" style="width:100%;height:10px;accent-color:#27ae60"></progress>
-    <div id="retrain-log" style="font-size:11px;color:#666;margin-top:4px;font-family:monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"></div>
-  </div>
-</div>
-<script>
-(async () => {
-  try {
-    const r = await fetch('http://127.0.0.1:8765/api/retrain-status');
-    const j = await r.json();
-    document.getElementById('corr-new').textContent = j.new_since_retrain;
-    document.getElementById('corr-total').textContent = j.last_retrain
-      ? `(${j.total} total, last retrain ${j.last_retrain.slice(0,10)})`
-      : `(${j.total} total, no retrain yet)`;
-    const btn = document.getElementById('retrain-btn');
-    if (j.new_since_retrain < 50) {
-      btn.title = `Only ${j.new_since_retrain} new corrections — threshold for a meaningful retrain is 200. Keep sorting!`;
-      btn.style.opacity = '0.45';
-    } else if (j.new_since_retrain < 200) {
-      btn.title = `${j.new_since_retrain}/200 new corrections — retrain works now but improves significantly at 200+.`;
-      btn.style.opacity = '0.75';
-    } else {
-      btn.title = `${j.new_since_retrain} new corrections — good time to retrain!`;
-      btn.style.boxShadow = '0 0 0 2px #27ae60';
-    }
-  } catch(e) { document.getElementById('corr-new').textContent = '?'; }
-})();
-function doRetrain() {
-  const btn = document.getElementById('retrain-btn');
-  const st = document.getElementById('retrain-status');
-  const wrap = document.getElementById('retrain-progress-wrap');
-  const bar = document.getElementById('retrain-progress');
-  const logEl = document.getElementById('retrain-log');
-  btn.disabled = true;
-  btn.textContent = 'Retraining…';
-  st.textContent = 'Do not close this tab.';
-  st.style.color = '#888';
-  wrap.style.display = 'block';
-  bar.value = 2;
-  const phases = [
-    ['Loading corrections', 5],
-    ['Loading original', 10],
-    ['Loading CLIP', 15],
-    ['Building training', 22],
-    ['Training Logistic', 32],
-    ['Predicting all', 55],
-    ['Backup', 60],
-    ['Wrote', 62],
-    ['Regenerating', 65],
-    ['Writing index', 95],
-    ['Retrain complete', 98],
-  ];
-  const es = new EventSource('http://127.0.0.1:8765/api/retrain-stream?regen=1');
-  es.onmessage = function(e) {
-    const ev = JSON.parse(e.data);
-    if (ev.type === 'done') {
-      bar.value = 100;
-      st.textContent = '✓ Done — ' + ev.loaded + ' photos reloaded. Refreshing…';
-      st.style.color = '#4a8';
-      logEl.textContent = '';
-      es.close();
-      setTimeout(() => location.reload(), 1800);
-    } else if (ev.type === 'error') {
-      st.textContent = 'Error — check server log';
-      st.style.color = '#c55';
-      logEl.textContent = ev.msg || '';
-      es.close();
-      btn.disabled = false;
-      btn.textContent = 'Retrain & Refresh';
-    } else {
-      const clean = ev.msg.replace(/^\\d{{4}}-\\d{{2}}-\\d{{2}} \\d{{2}}:\\d{{2}}:\\d{{2}},\\d{{3}} \\w+ /, '');
-      logEl.textContent = clean;
-      for (const [kw, pct] of phases) {
-        if (ev.msg.includes(kw) && bar.value < pct) {{ bar.value = pct; break; }}
-      }
-    }
-  };
-  es.onerror = function() {
-    if (bar.value < 100) {
-      st.textContent = 'Connection lost — retrain may still be running in background.';
-      st.style.color = '#c55';
-      es.close();
-    }
-  };
-}
-</script>
-""")
 TABLE_HEADER = ('<tr style="background:#1a1a1a">'
                 '<th style="text-align:left;padding:6px 8px">Album</th>'
                 '<th style="text-align:right;padding:6px 8px">Count</th>'
