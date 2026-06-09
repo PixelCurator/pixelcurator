@@ -868,8 +868,8 @@ if inbox_rows:
     parts.append(f"""
 <div id="inbox-section" style="margin:16px 0;padding:14px 16px;background:#111d2a;border:1px solid #4a7;border-radius:6px">
   <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px;flex-wrap:wrap">
-    <span style="font-size:14px;font-weight:600;color:#7ac">📥 {len(inbox_rows):,} new photos — not yet classified</span>
-    <span style="font-size:12px;color:#555">Click to assign an album · or use ⚡ Auto-classify above</span>
+    <span id="inbox-section-title" style="font-size:14px;font-weight:600;color:#7ac">📥 {len(inbox_rows):,} new photos — not yet classified</span>
+    <span id="inbox-section-sub" style="font-size:12px;color:#555">Click to assign an album · or use ⚡ Auto-classify above</span>
   </div>
   <div id="inbox-grid" class="grid">""")
     for _r in inbox_rows:
@@ -923,6 +923,15 @@ function _renderInbox() {{
   if (hint) hint.style.display = uncorrected.length === 0 && _iboxCells.length > 0 ? '' : 'none';
   const grid = document.getElementById('inbox-grid');
   if (grid) grid.style.display = uncorrected.length === 0 ? 'none' : '';
+  // Update section header to reflect sorted state
+  const titleEl = document.getElementById('inbox-section-title');
+  const subEl = document.getElementById('inbox-section-sub');
+  if (titleEl) titleEl.textContent = uncorrected.length === 0
+    ? '✓ ' + _iboxCells.length + ' photos sorted — waiting to be committed'
+    : '📥 ' + uncorrected.length + ' of ' + _iboxCells.length + ' photos not yet classified';
+  if (subEl) subEl.textContent = uncorrected.length === 0
+    ? 'Click ⚡ Auto-classify / Commit above to move them to their target albums.'
+    : 'Click to assign an album · or use ⚡ Auto-classify above';
 }}
 function inboxPrevPage() {{ if (_iboxPage > 0) {{ _iboxPage--; _renderInbox(); }} }}
 function inboxNextPage() {{
