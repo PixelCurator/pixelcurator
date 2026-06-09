@@ -488,7 +488,9 @@ def render_sheet(album: str, uids: list) -> str:
         nav='<a href="/">← Index</a> <span style="color:#888;font-size:12px">| Click photo to reassign · Modal: Esc closes · Cmd/Ctrl+S saves</span>',
     )]
     parts.append(sugg_html)
-    if album != "Thrash":
+    if album == "Thrash":
+        parts.append('<style>.cell.corrected{display:block!important;opacity:1;border-color:#c55!important}</style>')
+    else:
         parts.append('<div class="legend">Confidence in top-right. Click image to open modal · corrected photos auto-hidden.</div>')
         parts.append('<div id="toggleBar"><span id="hiddenCount">0 corrected hidden</span> <button onclick="toggleCorrected()">Toggle visibility</button></div>')
     parts.append('<div class="grid">')
