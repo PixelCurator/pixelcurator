@@ -17,6 +17,7 @@ import json
 import subprocess
 import sys
 import threading
+from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -93,6 +94,8 @@ print(f"  {emb.shape} loaded", flush=True)
 
 _lock = threading.Lock()
 _retrain_running = False
+_undo_stack = deque(maxlen=10)
+_redo_stack = deque(maxlen=10)
 
 
 def current_album(uid: str) -> str:
@@ -115,11 +118,13 @@ def find_similar(uid: str, n: int = 20) -> list:
     return [(uuids_emb[int(j)], float(sims[int(j)])) for j in top if uuids_emb[int(j)] != uid][:n]
 
 
-def apply_correction(uid: str, album: str, source: str = "manual"):
+def apply_correction(uid: str, album: str, source: str = "manual") -> str:
+    prev = current_album(uid)
     with _lock:
         with CORRECTIONS.open("a", newline="") as f:
             csv.writer(f).writerow([uid, album, dt.datetime.utcnow().isoformat(), source])
         corrections[uid] = album
+    return prev
 
 
 def _safe_fn(name: str) -> str:
@@ -205,6 +210,15 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/thrash-count":
             n = sum(1 for v in corrections.values() if v == "Thrash")
             self._json({"count": n}); return
+        if path == "/api/undo-status":
+            self._json({
+                "can_undo": bool(_undo_stack),
+                "undo_desc": _undo_stack[-1]["desc"] if _undo_stack else None,
+                "can_redo": bool(_redo_stack),
+                "redo_desc": _redo_stack[-1]["desc"] if _redo_stack else None,
+                "undo_count": len(_undo_stack),
+                "redo_count": len(_redo_stack),
+            }); return
         if path == "/api/retrain-status":
             total = len(corrections)
             last_file = ROOT / "metadata" / "last_retrain.json"
@@ -358,6 +372,117 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(404, f"no such file: {target.name}")
 
     def do_POST(self):
+        if self.path in ("/api/undo", "/api/redo"):
+            is_undo = self.path == "/api/undo"
+            src_stack = _undo_stack if is_undo else _redo_stack
+            dst_stack = _redo_stack if is_undo else _undo_stack
+            if not src_stack:
+                self._json({"ok": False, "error": "Nothing to " + ("undo" if is_undo else "redo")}); return
+            action = src_stack.pop()
+            tag = "undo" if is_undo else "redo"
+
+            if action["type"] == "reassign":
+                rev_changes = []
+                for ch in action["changes"]:
+                    target_album = ch["prev"] if is_undo else ch["new"]
+                    if target_album:
+                        apply_correction(ch["uuid"], target_album, tag)
+                        rev_changes.append({"uuid": ch["uuid"], "prev": ch["new"] if is_undo else ch["prev"], "new": target_album})
+                dst_stack.append({
+                    "type": "reassign",
+                    "desc": ("↩ " if is_undo else "↪ ") + action["desc"],
+                    "changes": rev_changes,
+                })
+                self._json({"ok": True, "type": "reassign", "reverted": len(rev_changes)}); return
+
+            elif action["type"] == "rename":
+                rev_old = action["data"]["new_name"] if is_undo else action["data"]["old_name"]
+                rev_new = action["data"]["old_name"] if is_undo else action["data"]["new_name"]
+                name_map = {rev_old: rev_new}
+                if not rev_old.endswith("-unsure"):
+                    name_map[rev_old + "-unsure"] = rev_new + "-unsure"
+                with ASSIGN.open() as f:
+                    reader = csv.DictReader(f); fields = reader.fieldnames; rows = list(reader)
+                for r in rows:
+                    if r["album"] in name_map: r["album"] = name_map[r["album"]]
+                with ASSIGN.open("w", newline="") as f:
+                    w = csv.DictWriter(f, fieldnames=fields); w.writeheader(); w.writerows(rows)
+                with CORRECTIONS.open() as f:
+                    cr = csv.DictReader(f); cf = cr.fieldnames; crows = list(cr)
+                for r in crows:
+                    if r["new_album"] in name_map: r["new_album"] = name_map[r["new_album"]]
+                with CORRECTIONS.open("w", newline="") as f:
+                    w = csv.DictWriter(f, fieldnames=cf); w.writeheader(); w.writerows(crows)
+                with _lock:
+                    for uid in list(assigned):
+                        if assigned[uid] in name_map: assigned[uid] = name_map[assigned[uid]]
+                    for uid in list(corrections):
+                        if corrections[uid] in name_map: corrections[uid] = name_map[corrections[uid]]
+                for old in name_map:
+                    stale = REVIEW / (_safe_fn(old) + ".html")
+                    if stale.exists(): stale.unlink()
+                subprocess.run([sys.executable, str(ROOT / "04_contact_sheets.py")], capture_output=True, timeout=120)
+                dst_stack.append({
+                    "type": "rename",
+                    "desc": ("↩ " if is_undo else "↪ ") + action["desc"],
+                    "data": {"old_name": rev_new, "new_name": rev_old},
+                })
+                self._json({"ok": True, "type": "rename", "map": name_map}); return
+
+            elif action["type"] == "merge":
+                if is_undo:
+                    source = action["data"]["source"]
+                    target = action["data"]["target"]
+                    affected = set(action["data"]["affected_uuids"])
+                    name_map_rev = {target: source, target + "-unsure": source + "-unsure"}
+                    with ASSIGN.open() as f:
+                        reader = csv.DictReader(f); fields = reader.fieldnames; rows = list(reader)
+                    for r in rows:
+                        if r["uuid"] in affected and r["album"] in name_map_rev:
+                            r["album"] = name_map_rev[r["album"]]
+                    with ASSIGN.open("w", newline="") as f:
+                        w = csv.DictWriter(f, fieldnames=fields); w.writeheader(); w.writerows(rows)
+                    with CORRECTIONS.open() as f:
+                        cr = csv.DictReader(f); cf = cr.fieldnames; crows = list(cr)
+                    for r in crows:
+                        if r["uuid"] in affected and r["new_album"] in name_map_rev:
+                            r["new_album"] = name_map_rev[r["new_album"]]
+                    with CORRECTIONS.open("w", newline="") as f:
+                        w = csv.DictWriter(f, fieldnames=cf); w.writeheader(); w.writerows(crows)
+                    with _lock:
+                        for uid in list(assigned):
+                            if uid in affected and assigned[uid] in name_map_rev:
+                                assigned[uid] = name_map_rev[assigned[uid]]
+                        for uid in list(corrections):
+                            if uid in affected and corrections[uid] in name_map_rev:
+                                corrections[uid] = name_map_rev[corrections[uid]]
+                    subprocess.run([sys.executable, str(ROOT / "04_contact_sheets.py")], capture_output=True, timeout=120)
+                    dst_stack.append({
+                        "type": "merge",
+                        "desc": "↪ " + action["desc"],
+                        "data": action["data"],
+                    })
+                    self._json({"ok": True, "type": "merge_undo", "restored": len(affected)}); return
+                else:
+                    source = action["data"]["source"]
+                    target = action["data"]["target"]
+                    name_map = {source: target, source + "-unsure": target + "-unsure"}
+                    with ASSIGN.open() as f:
+                        reader = csv.DictReader(f); fields = reader.fieldnames; rows = list(reader)
+                    for r in rows:
+                        if r["album"] in name_map: r["album"] = name_map[r["album"]]
+                    with ASSIGN.open("w", newline="") as f:
+                        w = csv.DictWriter(f, fieldnames=fields); w.writeheader(); w.writerows(rows)
+                    subprocess.run([sys.executable, str(ROOT / "04_contact_sheets.py")], capture_output=True, timeout=120)
+                    dst_stack.append({
+                        "type": "merge",
+                        "desc": "↩ " + action["desc"],
+                        "data": action["data"],
+                    })
+                    self._json({"ok": True, "type": "merge_redo"}); return
+
+            self._json({"ok": False, "error": f"Unknown action type: {action['type']}"}); return
+
         if self.path == "/api/reassign":
             body = self._read_body()
             album = body.get("new_album", "").strip()
@@ -365,10 +490,19 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"error": "new_album required"}, 400); return
             uids = body.get("uuids") or ([body["uuid"]] if "uuid" in body else [])
             src = body.get("source", "manual")
+            changes = []
             for u in uids:
                 if u in path_by_uuid:
-                    apply_correction(u, album, src)
-            self._json({"ok": True, "count": len(uids), "album": album}); return
+                    prev = apply_correction(u, album, src)
+                    changes.append({"uuid": u, "prev": prev, "new": album})
+            if changes and src not in ("undo", "redo"):
+                _undo_stack.append({
+                    "type": "reassign",
+                    "desc": f"Moved {len(changes)} photo(s) → {album}",
+                    "changes": changes,
+                })
+                _redo_stack.clear()
+            self._json({"ok": True, "count": len(changes), "album": album}); return
 
         if self.path == "/api/retrain":
             body = self._read_body()
@@ -395,9 +529,19 @@ class Handler(BaseHTTPRequestHandler):
             with ASSIGN.open() as f:
                 reader = csv.DictReader(f); fields = reader.fieldnames; rows = list(reader)
             merged = 0
+            # Identify affected UUIDs BEFORE replacement
+            affected_uuids = []
             for r in rows:
                 if r["album"] in name_map:
+                    affected_uuids.append(r["uuid"])
                     r["album"] = name_map[r["album"]]; merged += 1
+            # Record undo BEFORE writing CSV
+            _undo_stack.append({
+                "type": "merge",
+                "desc": f"Merged '{source}' → '{target}' ({len(affected_uuids)} photos)",
+                "data": {"source": source, "target": target, "affected_uuids": affected_uuids},
+            })
+            _redo_stack.clear()
             with ASSIGN.open("w", newline="") as f:
                 w = csv.DictWriter(f, fieldnames=fields); w.writeheader(); w.writerows(rows)
             # Rewrite corrections.csv
@@ -463,6 +607,13 @@ class Handler(BaseHTTPRequestHandler):
                 subprocess.run([sys.executable, str(ROOT / "04_contact_sheets.py")],
                                capture_output=True, timeout=120)
                 self._json({"ok": True, "action": "merged", "target": canonical, "merged": merged2}); return
+            # Record undo BEFORE applying the rename
+            _undo_stack.append({
+                "type": "rename",
+                "desc": f"Renamed '{old_name}' → '{new_name}'",
+                "data": {"old_name": old_name, "new_name": new_name},
+            })
+            _redo_stack.clear()
             # Build mapping: also rename the -unsure variant
             name_map = {old_name: new_name}
             if not old_name.endswith("-unsure"):

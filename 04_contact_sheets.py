@@ -570,6 +570,37 @@ async function runInboxPhase(phase) {{
 </script>
 """)
 parts.append("""
+<div id="undo-bar" style="margin:8px 0;padding:7px 12px;background:#1a1a1a;border-radius:4px;display:flex;align-items:center;gap:10px;font-size:12px">
+  <button id="undo-btn" onclick="doUndoRedo('undo')" disabled
+    style="background:#333;color:#aaa;border:0;padding:3px 10px;border-radius:3px;cursor:pointer;font-size:12px">↩ Undo</button>
+  <span id="undo-desc" style="color:#555;flex:1">—</span>
+  <button id="redo-btn" onclick="doUndoRedo('redo')" disabled
+    style="background:#333;color:#aaa;border:0;padding:3px 10px;border-radius:3px;cursor:pointer;font-size:12px">Redo ↪</button>
+</div>
+<script>
+(async () => {
+  try {
+    const r = await fetch('http://127.0.0.1:8765/api/undo-status');
+    const j = await r.json();
+    const ub = document.getElementById('undo-btn');
+    const rb = document.getElementById('redo-btn');
+    const ud = document.getElementById('undo-desc');
+    ub.disabled = !j.can_undo;
+    rb.disabled = !j.can_redo;
+    ub.style.color = j.can_undo ? '#eee' : '#555';
+    rb.style.color = j.can_redo ? '#eee' : '#555';
+    if (j.undo_desc) ud.textContent = j.undo_desc + (j.undo_count > 1 ? ` (+${j.undo_count - 1} more)` : '');
+  } catch(e) {}
+})();
+async function doUndoRedo(action) {
+  const r = await fetch('http://127.0.0.1:8765/api/' + action, {method:'POST'});
+  const j = await r.json();
+  if (j.ok) location.reload();
+  else alert((action === 'undo' ? 'Undo' : 'Redo') + ' failed: ' + (j.error || 'unknown'));
+}
+</script>
+""")
+parts.append("""
 <div id="thrash-bar" style="margin:12px 0;padding:10px 14px;background:#2a1a1a;border:1px solid #c55;border-radius:6px;display:flex;align-items:center;gap:14px">
   <span style="font-size:13px">🗑 <b>Thrash:</b> <span id="thrash-count">…</span> photos marked for deletion</span>
   <button id="empty-thrash-btn" onclick="openEmptyThrash()" style="background:#c55;color:#fff;border:0;padding:6px 14px;border-radius:4px;cursor:pointer;font-weight:600;font-size:13px">Empty Thrash</button>
@@ -664,9 +695,13 @@ parts.append("""
       : `(${j.total} total, no retrain yet)`;
     const btn = document.getElementById('retrain-btn');
     if (j.new_since_retrain < 50) {
-      btn.title = 'Recommended: collect 200+ new corrections before retraining';
-      btn.style.opacity = '0.55';
-    } else if (j.new_since_retrain >= 200) {
+      btn.title = `Only ${j.new_since_retrain} new corrections — threshold for a meaningful retrain is 200. Keep sorting!`;
+      btn.style.opacity = '0.45';
+    } else if (j.new_since_retrain < 200) {
+      btn.title = `${j.new_since_retrain}/200 new corrections — retrain works now but improves significantly at 200+.`;
+      btn.style.opacity = '0.75';
+    } else {
+      btn.title = `${j.new_since_retrain} new corrections — good time to retrain!`;
       btn.style.boxShadow = '0 0 0 2px #27ae60';
     }
   } catch(e) { document.getElementById('corr-new').textContent = '?'; }
