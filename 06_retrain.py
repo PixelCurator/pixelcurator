@@ -47,7 +47,7 @@ CONF_UNSURE = 0.50   # >= this but < CONF_MAIN → <album>-unsure
 MIN_CORR = 3
 
 # Minimum confidence in original assignment to include as a weak label
-WEAK_THRESHOLD = 0.92
+WEAK_THRESHOLD = 0.80   # was 0.92 — lowered so albums with conf 0.80-0.92 survive retrain
 
 # Albums that are local-only / noise — never used as training labels
 SKIP_ALBUMS = {"Thrash", "_test_"}

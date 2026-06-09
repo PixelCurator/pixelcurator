@@ -60,6 +60,44 @@ with ASSIGN_CSV.open() as f:
 
 log.info(f"  {len(album_to_uids)} albums, {len(uid_to_assign)} photos assigned")
 
+# Apply corrections on top of assignments (same logic as server.py / current_album())
+CORRECTIONS_CSV = ROOT / "metadata" / "corrections.csv"
+SKIP_ALBUMS_SET = {"Thrash", "_test_"}
+if CORRECTIONS_CSV.exists():
+    _corr: dict[str, str] = {}
+    with CORRECTIONS_CSV.open() as f:
+        for r in csv.DictReader(f):
+            if r.get("new_album"):
+                _corr[r["uuid"]] = r["new_album"]
+            else:
+                _corr.pop(r["uuid"], None)
+    _moved = 0
+    for _uid, _new_album in _corr.items():
+        if _new_album in SKIP_ALBUMS_SET:
+            # Remove from current album but don't add to Thrash/test in sheets
+            _old = uid_to_assign.get(_uid, (None,))[0]
+            if _old and _old in album_to_uids:
+                try:
+                    album_to_uids[_old].remove(_uid)
+                except ValueError:
+                    pass
+            continue
+        _old_album = uid_to_assign.get(_uid, (None,))[0]
+        if _old_album == _new_album:
+            continue
+        if _old_album and _old_album in album_to_uids:
+            try:
+                album_to_uids[_old_album].remove(_uid)
+            except ValueError:
+                pass
+        album_to_uids[_new_album].append(_uid)
+        uid_to_assign[_uid] = (_new_album, 1.0, "correction")
+        _moved += 1
+    # Remove empty albums created by corrections
+    album_to_uids = defaultdict(list, {k: v for k, v in album_to_uids.items() if v})
+    if _moved:
+        log.info(f"  Applied {len(_corr)} corrections ({_moved} photos moved between albums)")
+
 # Cluster suggestions
 cluster_meta = {}
 if CLUSTER_META.exists():
@@ -360,6 +398,8 @@ function markCellCorrected(uuid, album, isTrashed=false) {
     moved.textContent = isTrashed ? '🗑' : ('→ ' + album.slice(0,12));
   }
   updateHiddenCount();
+  // Refresh inbox grid pagination if on index page
+  if (typeof _renderInbox === 'function') _renderInbox();
 }
 
 function updateHiddenCount() {
@@ -522,8 +562,39 @@ parts = [HTML_HEAD.format(
     meta=f"Total {len(uid_to_assign):,} photos across {len(albums_sorted)} albums.&nbsp;<span id='inbox-meta-extra' style='color:#7ac'></span>",
     nav='<span style="color:#aaa;font-weight:600;font-size:14px">Photo Sort — Review</span>',
 )]
+parts.append("""
+<div id="undo-bar" style="margin:8px 0 6px;padding:7px 12px;background:#1a1a1a;border-radius:4px;display:flex;align-items:center;gap:10px;font-size:12px">
+  <button id="undo-btn" onclick="doUndoRedo('undo')" disabled
+    style="background:#333;color:#aaa;border:0;padding:3px 10px;border-radius:3px;cursor:pointer;font-size:12px">↩ Undo</button>
+  <span id="undo-desc" style="color:#555;flex:1">—</span>
+  <button id="redo-btn" onclick="doUndoRedo('redo')" disabled
+    style="background:#333;color:#aaa;border:0;padding:3px 10px;border-radius:3px;cursor:pointer;font-size:12px">Redo ↪</button>
+</div>
+<script>
+(async () => {
+  try {
+    const r = await fetch('http://127.0.0.1:8765/api/undo-status');
+    const j = await r.json();
+    const ub = document.getElementById('undo-btn');
+    const rb = document.getElementById('redo-btn');
+    const ud = document.getElementById('undo-desc');
+    ub.disabled = !j.can_undo;
+    rb.disabled = !j.can_redo;
+    ub.style.color = j.can_undo ? '#eee' : '#555';
+    rb.style.color = j.can_redo ? '#eee' : '#555';
+    if (j.undo_desc) ud.textContent = j.undo_desc + (j.undo_count > 1 ? ` (+${j.undo_count - 1} more)` : '');
+  } catch(e) {}
+})();
+async function doUndoRedo(action) {
+  const r = await fetch('http://127.0.0.1:8765/api/' + action, {method:'POST'});
+  const j = await r.json();
+  if (j.ok) location.reload();
+  else alert((action === 'undo' ? 'Undo' : 'Redo') + ' failed: ' + (j.error || 'unknown'));
+}
+</script>
+""")
 parts.append(f"""
-<div id="inbox-bar" style="margin:12px 0 8px;padding:10px 14px;background:#1a1f2a;border:1px solid #7ac;border-radius:6px;display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+<div id="inbox-bar" style="margin:6px 0 8px;padding:10px 14px;background:#1a1f2a;border:1px solid #7ac;border-radius:6px;display:flex;align-items:center;gap:14px;flex-wrap:wrap">
   <span style="font-size:13px">📥 <b>Inbox:</b> <span id="inbox-count">{"⏳" if not inbox_rows else len(inbox_rows)}</span> new photos not yet classified</span>
   <button id="inbox-scan-btn" onclick="runInboxPhase('detect')"
     style="background:#2a4a6a;color:#7ac;border:1px solid #7ac;padding:5px 12px;border-radius:4px;cursor:pointer;font-size:12px;font-weight:600">
@@ -596,46 +667,26 @@ async function runInboxPhase(phase) {{
   try {{
     const r = await fetch('http://127.0.0.1:8765/api/inbox-count');
     const j = await r.json();
+    // Counts: j.count=unsorted, j.total=all inbox, j.sorted=manually assigned
     document.getElementById('inbox-count').textContent = j.count;
     const mx = document.getElementById('inbox-meta-extra');
-    if (mx && j.count > 0) {{ mx.textContent = ' · ' + j.count.toLocaleString() + ' new in Inbox'; }}
+    if (mx) {{
+      if (j.count > 0) mx.textContent = ' · ' + j.count + ' unsorted in Inbox' + (j.sorted > 0 ? ' · ✓ ' + j.sorted + ' sorted' : '');
+      else if (j.total > 0) mx.textContent = ' · ✓ Inbox all sorted — click ⚡ to commit';
+    }}
     const pb = document.getElementById('inbox-process-btn');
-    if (j.count > 0) {{ pb.style.opacity = '1'; pb.style.pointerEvents = ''; pb.textContent = '⚡ Auto-classify (' + j.count + ' photos)'; }}
+    if (j.total > 0) {{
+      pb.style.opacity = '1'; pb.style.pointerEvents = '';
+      pb.textContent = '⚡ ' + (j.sorted > 0 && j.count === 0 ? 'Commit to albums (' + j.total + ')' : 'Auto-classify (' + j.total + ' photos)');
+      pb.title = j.sorted > 0
+        ? 'Processes all ' + j.total + ' inbox photos. Manually sorted photos keep your album assignment. The ' + j.count + ' remaining get ML classification.'
+        : 'Embed + classify all ' + j.total + ' inbox photos with CLIP ML model.';
+    }}
   }} catch(e) {{}}
 }})();
 </script>
 """)
-parts.append("""
-<div id="undo-bar" style="margin:8px 0;padding:7px 12px;background:#1a1a1a;border-radius:4px;display:flex;align-items:center;gap:10px;font-size:12px">
-  <button id="undo-btn" onclick="doUndoRedo('undo')" disabled
-    style="background:#333;color:#aaa;border:0;padding:3px 10px;border-radius:3px;cursor:pointer;font-size:12px">↩ Undo</button>
-  <span id="undo-desc" style="color:#555;flex:1">—</span>
-  <button id="redo-btn" onclick="doUndoRedo('redo')" disabled
-    style="background:#333;color:#aaa;border:0;padding:3px 10px;border-radius:3px;cursor:pointer;font-size:12px">Redo ↪</button>
-</div>
-<script>
-(async () => {
-  try {
-    const r = await fetch('http://127.0.0.1:8765/api/undo-status');
-    const j = await r.json();
-    const ub = document.getElementById('undo-btn');
-    const rb = document.getElementById('redo-btn');
-    const ud = document.getElementById('undo-desc');
-    ub.disabled = !j.can_undo;
-    rb.disabled = !j.can_redo;
-    ub.style.color = j.can_undo ? '#eee' : '#555';
-    rb.style.color = j.can_redo ? '#eee' : '#555';
-    if (j.undo_desc) ud.textContent = j.undo_desc + (j.undo_count > 1 ? ` (+${j.undo_count - 1} more)` : '');
-  } catch(e) {}
-})();
-async function doUndoRedo(action) {
-  const r = await fetch('http://127.0.0.1:8765/api/' + action, {method:'POST'});
-  const j = await r.json();
-  if (j.ok) location.reload();
-  else alert((action === 'undo' ? 'Undo' : 'Redo') + ' failed: ' + (j.error || 'unknown'));
-}
-</script>
-""")
+# undo bar inserted above (before inbox bar)
 parts.append("""
 <div id="thrash-bar" style="margin:12px 0;padding:10px 14px;background:#2a1a1a;border:1px solid #c55;border-radius:6px;display:flex;align-items:center;gap:14px">
   <span style="font-size:13px">🗑 <b>Thrash:</b> <span id="thrash-count">…</span> photos marked for deletion</span>
@@ -842,22 +893,42 @@ if inbox_rows:
     <button id="inbox-next-btn" onclick="inboxNextPage()"
       style="background:#333;color:#eee;border:0;padding:4px 10px;border-radius:3px;cursor:pointer;font-size:12px">Next →</button>
   </div>
+  <p id="inbox-commit-hint" style="display:none;margin:8px 0 0;color:#7ac;font-size:12px">
+    ✓ All sorted manually — click ⚡ Auto-classify above to commit photos to their target albums.</p>
 </div>
 <script>
 let _iboxPage = 0;
 const _iboxCells = [...document.querySelectorAll('#inbox-grid .cell')];
-const _iboxPages = Math.ceil(_iboxCells.length / {_ibox_ps});
 function _renderInbox() {{
-  _iboxCells.forEach((c, i) => {{
-    c.style.display = (i >= _iboxPage * {_ibox_ps} && i < (_iboxPage + 1) * {_ibox_ps}) ? '' : 'none';
-  }});
-  document.getElementById('inbox-page-info').textContent =
-    'Page ' + (_iboxPage + 1) + ' of ' + _iboxPages + ' · ' + _iboxCells.length + ' photos';
+  const uncorrected = _iboxCells.filter(c => !c.classList.contains('corrected'));
+  const totalPages = Math.max(1, Math.ceil(uncorrected.length / {_ibox_ps}));
+  if (_iboxPage >= totalPages) _iboxPage = Math.max(0, totalPages - 1);
+  _iboxCells.forEach(c => {{ c.style.display = 'none'; }});
+  uncorrected.slice(_iboxPage * {_ibox_ps}, (_iboxPage + 1) * {_ibox_ps}).forEach(c => {{ c.style.display = ''; }});
+  const sortedN = _iboxCells.length - uncorrected.length;
+  const sortedNote = sortedN > 0 ? ' · ✓ ' + sortedN + ' sorted' : '';
+  document.getElementById('inbox-page-info').textContent = uncorrected.length === 0
+    ? '✓ All ' + _iboxCells.length + ' photos sorted manually'
+    : 'Page ' + (_iboxPage + 1) + ' of ' + totalPages + ' · ' + uncorrected.length + ' unsorted' + sortedNote;
   document.getElementById('inbox-prev-btn').disabled = _iboxPage === 0;
-  document.getElementById('inbox-next-btn').disabled = _iboxPage >= _iboxPages - 1;
+  document.getElementById('inbox-next-btn').disabled = _iboxPage >= totalPages - 1;
+  // Sync count badge + meta line + commit hint
+  const countEl = document.getElementById('inbox-count');
+  if (countEl) countEl.textContent = uncorrected.length;
+  const mx = document.getElementById('inbox-meta-extra');
+  if (mx) mx.textContent = uncorrected.length > 0
+    ? ' · ' + uncorrected.length + ' unsorted in Inbox' + (sortedN > 0 ? ' · ✓ ' + sortedN + ' sorted' : '')
+    : (sortedN > 0 ? ' · ✓ Inbox all sorted — click ⚡ to commit' : '');
+  const hint = document.getElementById('inbox-commit-hint');
+  if (hint) hint.style.display = uncorrected.length === 0 && _iboxCells.length > 0 ? '' : 'none';
+  const grid = document.getElementById('inbox-grid');
+  if (grid) grid.style.display = uncorrected.length === 0 ? 'none' : '';
 }}
 function inboxPrevPage() {{ if (_iboxPage > 0) {{ _iboxPage--; _renderInbox(); }} }}
-function inboxNextPage() {{ if (_iboxPage < _iboxPages - 1) {{ _iboxPage++; _renderInbox(); }} }}
+function inboxNextPage() {{
+  const uncorrected = _iboxCells.filter(c => !c.classList.contains('corrected'));
+  if (_iboxPage < Math.ceil(uncorrected.length / {_ibox_ps}) - 1) {{ _iboxPage++; _renderInbox(); }}
+}}
 _renderInbox();
 </script>
 """)

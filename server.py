@@ -233,11 +233,17 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/inbox-count":
             inbox = ROOT / "metadata" / "inbox.csv"
-            count = 0
+            total = 0
+            unsorted = 0
             if inbox.exists():
                 with inbox.open() as f:
-                    count = sum(1 for r in csv.DictReader(f) if r.get("has_local_derivative") == "True")
-            self._json({"count": count}); return
+                    for r in csv.DictReader(f):
+                        if r.get("has_local_derivative") == "True":
+                            total += 1
+                            if r.get("uuid", "") not in corrections:
+                                unsorted += 1
+            self._json({"count": unsorted, "total": total,
+                        "sorted": total - unsorted}); return
 
         if path in ("/api/inbox-detect-stream", "/api/inbox-process-stream"):
             mode = "--detect" if path == "/api/inbox-detect-stream" else "--process"

@@ -38,7 +38,7 @@ CONF_MAIN = 0.80
 CONF_UNSURE = 0.50
 SKIP_ALBUMS = {"Thrash", "_test_"}
 MIN_CORR = 3
-WEAK_THRESHOLD = 0.92
+WEAK_THRESHOLD = 0.80   # was 0.92 — lowered to match 06_retrain.py
 
 logging.basicConfig(
     level=logging.INFO,
@@ -133,149 +133,169 @@ def run_process():
         sys.exit(1)
 
     inbox_rows = list(csv.DictReader(INBOX_CSV.open()))
-    todo = [r for r in inbox_rows if r.get("has_local_derivative") == "True" and r.get("derivative_path")]
-    log.info(f"  {len(todo)} photos to embed")
-    if not todo:
-        log.info("  Nothing to do.")
-        return
+    all_with_path = [r for r in inbox_rows
+                     if r.get("has_local_derivative") == "True" and r.get("derivative_path")]
 
-    # Load CLIP model
-    try:
-        import torch
-        import open_clip
-        from PIL import Image
-    except ImportError as e:
-        log.error(f"Missing dependency: {e}. Run inside the venv.")
-        sys.exit(2)
-
-    device = "mps" if torch.backends.mps.is_available() else "cpu"
-    log.info(f"  Loading CLIP (device={device})…")
-    model, _, preprocess = open_clip.create_model_and_transforms("ViT-B-32", pretrained="openai")
-    model = model.to(device).eval()
-    log.info("  CLIP ready")
-
-    # Embed new photos
-    BATCH = 64
-    new_embs = []
-    new_uuids = []
-    failed = 0
-    t0 = time.time()
-    for i in range(0, len(todo), BATCH):
-        batch = todo[i:i + BATCH]
-        imgs, uids = [], []
-        for r in batch:
-            try:
-                img = preprocess(Image.open(r["derivative_path"]).convert("RGB"))
-                imgs.append(img)
-                uids.append(r["uuid"])
-            except Exception as e:
-                log.warning(f"  skip {r['uuid'][:8]}: {e}")
-                failed += 1
-        if not imgs:
-            continue
-        with torch.no_grad():
-            t = torch.stack(imgs).to(device)
-            emb = model.encode_image(t)
-            emb = emb / emb.norm(dim=-1, keepdim=True)
-            new_embs.append(emb.cpu().float().numpy())
-            new_uuids.extend(uids)
-        if (i // BATCH) % 5 == 0:
-            elapsed = time.time() - t0
-            log.info(f"  embedded {len(new_uuids)}/{len(todo)} ({elapsed:.0f}s, {failed} failed)")
-
-    if not new_embs:
-        log.error("No embeddings generated")
-        sys.exit(1)
-    new_emb_arr = np.vstack(new_embs)
-    log.info(f"  Embedded {len(new_uuids)} photos ({failed} failed)")
-
-    # Load existing embeddings + append
-    log.info("  Appending to embeddings…")
-    old_emb = np.load(EMB_NPY)
-    old_uuids = json.loads(EMB_IDX.read_text())
-    combined_emb = np.vstack([old_emb, new_emb_arr])
-    combined_uuids = old_uuids + new_uuids
-    np.save(EMB_NPY, combined_emb)
-    EMB_IDX.write_text(json.dumps(combined_uuids))
-    log.info(f"  Embeddings: {len(old_uuids)} → {len(combined_uuids)}")
-
-    # Train classifier on existing corrections + assignments
-    log.info("  Training classifier…")
-    try:
-        from sklearn.linear_model import LogisticRegression
-    except ImportError:
-        log.error("scikit-learn not installed")
-        sys.exit(2)
-
-    corrections = {}
+    # Load corrections so we can separate manually sorted from ML-todo
+    manual_album: dict[str, str] = {}
     if CORRECTIONS_CSV.exists():
         with CORRECTIONS_CSV.open() as f:
             for r in csv.DictReader(f):
-                if r["new_album"] and r["new_album"] not in SKIP_ALBUMS:
-                    corrections[r["uuid"]] = r["new_album"]
+                if r.get("new_album"):
+                    manual_album[r["uuid"]] = r["new_album"]
+                else:
+                    manual_album.pop(r["uuid"], None)
 
-    assigned = {}
-    with ASSIGN_CSV.open() as f:
-        for r in csv.DictReader(f):
-            assigned[r["uuid"]] = (r["album"], float(r["confidence"]))
+    # Split: manually sorted keep their album; rest go through ML
+    manual_rows = [r for r in all_with_path if r["uuid"] in manual_album]
+    todo = [r for r in all_with_path if r["uuid"] not in manual_album]
+    log.info(f"  {len(manual_rows)} manually sorted (keeping user assignment)")
+    log.info(f"  {len(todo)} photos to embed + classify with ML")
+    if not all_with_path:
+        log.info("  Nothing to do.")
+        return
 
-    uuid_to_idx = {u: i for i, u in enumerate(combined_uuids)}
+    # Load CLIP model + embed (only for ML photos; manual ones skip this)
+    new_emb_arr = None
+    new_uuids: list = []
+    if todo:
+        try:
+            import torch
+            import open_clip
+            from PIL import Image
+        except ImportError as e:
+            log.error(f"Missing dependency: {e}. Run inside the venv.")
+            sys.exit(2)
 
-    # Build training set
-    from collections import Counter
-    corr_counts = Counter(corrections.values())
-    valid_corr = {a for a, n in corr_counts.items() if n >= MIN_CORR}
+        device = "mps" if torch.backends.mps.is_available() else "cpu"
+        log.info(f"  Loading CLIP (device={device})…")
+        model, _, preprocess = open_clip.create_model_and_transforms("ViT-B-32", pretrained="openai")
+        model = model.to(device).eval()
+        log.info("  CLIP ready")
 
-    X_tr, y_tr, w_tr = [], [], []
-    for uid, alb in corrections.items():
-        if alb not in valid_corr or uid not in uuid_to_idx:
-            continue
-        X_tr.append(combined_emb[uuid_to_idx[uid]])
-        y_tr.append(alb)
-        w_tr.append(2.0)
-    for uid, (alb, conf) in assigned.items():
-        if uid in corrections or conf < WEAK_THRESHOLD or alb.endswith("-unsure") or alb in SKIP_ALBUMS:
-            continue
-        if uid not in uuid_to_idx:
-            continue
-        X_tr.append(combined_emb[uuid_to_idx[uid]])
-        y_tr.append(alb)
-        w_tr.append(1.0)
+        BATCH = 64
+        new_embs = []
+        failed = 0
+        t0 = time.time()
+        for i in range(0, len(todo), BATCH):
+            batch = todo[i:i + BATCH]
+            imgs, uids = [], []
+            for r in batch:
+                try:
+                    img = preprocess(Image.open(r["derivative_path"]).convert("RGB"))
+                    imgs.append(img)
+                    uids.append(r["uuid"])
+                except Exception as e:
+                    log.warning(f"  skip {r['uuid'][:8]}: {e}")
+                    failed += 1
+            if not imgs:
+                continue
+            with torch.no_grad():
+                t = torch.stack(imgs).to(device)
+                emb = model.encode_image(t)
+                emb = emb / emb.norm(dim=-1, keepdim=True)
+                new_embs.append(emb.cpu().float().numpy())
+                new_uuids.extend(uids)
+            if (i // BATCH) % 5 == 0:
+                elapsed = time.time() - t0
+                log.info(f"  embedded {len(new_uuids)}/{len(todo)} ({elapsed:.0f}s, {failed} failed)")
 
-    if not X_tr:
-        log.warning("No training data — using Diverses as fallback for all new photos")
-        clf = None
+        if new_embs:
+            new_emb_arr = np.vstack(new_embs)
+            log.info(f"  Embedded {len(new_uuids)} photos ({failed} failed)")
+        else:
+            log.warning("  No ML embeddings generated")
     else:
-        def _norm(X):
-            n = np.linalg.norm(X, axis=1, keepdims=True)
-            return X / np.where(n == 0, 1.0, n)
-        X_arr = _norm(np.array(X_tr, dtype=np.float32))
-        clf = LogisticRegression(C=1.0, max_iter=2000, solver="lbfgs",
-                                 class_weight="balanced", n_jobs=-1)
-        clf.fit(X_arr, y_tr, sample_weight=np.array(w_tr))
-        log.info(f"  Classifier: {len(clf.classes_)} classes, {len(X_tr)} training samples")
+        log.info("  All inbox photos manually sorted — skipping CLIP embedding")
 
-    # Classify new photos
-    new_emb_norm = new_emb_arr / np.linalg.norm(new_emb_arr, axis=1, keepdims=True)
-    if clf is not None:
-        probs = clf.predict_proba(new_emb_norm)
-        preds = clf.predict(new_emb_norm)
-        confs = probs.max(axis=1)
+    # Load existing embeddings + append new ML embeddings
+    if new_emb_arr is not None:
+        log.info("  Appending to embeddings…")
+        old_emb = np.load(EMB_NPY)
+        old_uuids = json.loads(EMB_IDX.read_text())
+        combined_emb = np.vstack([old_emb, new_emb_arr])
+        combined_uuids = old_uuids + new_uuids
+        np.save(EMB_NPY, combined_emb)
+        EMB_IDX.write_text(json.dumps(combined_uuids))
+        log.info(f"  Embeddings: {len(old_uuids)} → {len(combined_uuids)}")
     else:
-        preds = ["Diverses"] * len(new_uuids)
-        confs = [0.0] * len(new_uuids)
+        combined_emb = np.load(EMB_NPY)
+        combined_uuids = json.loads(EMB_IDX.read_text())
 
-    # Append to inventory.csv and assignments.csv
-    uid_set = {r["uuid"] for r in inbox_rows}
-    inv_rows = [r for r in inbox_rows if r["uuid"] in set(new_uuids)]
+    # Train classifier + classify ML photos (only if ML photos were embedded)
+    preds: list = []
+    confs: list = []
+    if new_emb_arr is not None and new_uuids:
+        log.info("  Training classifier…")
+        try:
+            from sklearn.linear_model import LogisticRegression
+        except ImportError:
+            log.error("scikit-learn not installed")
+            sys.exit(2)
 
-    # inventory.csv: append new rows
+        corrections_cl = {}
+        if CORRECTIONS_CSV.exists():
+            with CORRECTIONS_CSV.open() as f:
+                for r in csv.DictReader(f):
+                    if r["new_album"] and r["new_album"] not in SKIP_ALBUMS:
+                        corrections_cl[r["uuid"]] = r["new_album"]
+
+        assigned = {}
+        with ASSIGN_CSV.open() as f:
+            for r in csv.DictReader(f):
+                assigned[r["uuid"]] = (r["album"], float(r["confidence"]))
+
+        uuid_to_idx = {u: i for i, u in enumerate(combined_uuids)}
+        from collections import Counter
+        corr_counts = Counter(corrections_cl.values())
+        valid_corr = {a for a, n in corr_counts.items() if n >= MIN_CORR}
+
+        X_tr, y_tr, w_tr = [], [], []
+        for uid, alb in corrections_cl.items():
+            if alb not in valid_corr or uid not in uuid_to_idx:
+                continue
+            X_tr.append(combined_emb[uuid_to_idx[uid]])
+            y_tr.append(alb)
+            w_tr.append(2.0)
+        for uid, (alb, conf) in assigned.items():
+            if uid in corrections_cl or conf < WEAK_THRESHOLD or alb.endswith("-unsure") or alb in SKIP_ALBUMS:
+                continue
+            if uid not in uuid_to_idx:
+                continue
+            X_tr.append(combined_emb[uuid_to_idx[uid]])
+            y_tr.append(alb)
+            w_tr.append(1.0)
+
+        if not X_tr:
+            log.warning("No training data — using Diverses as fallback for ML photos")
+            preds = ["Diverses"] * len(new_uuids)
+            confs = [0.0] * len(new_uuids)
+        else:
+            def _norm(X):
+                n = np.linalg.norm(X, axis=1, keepdims=True)
+                return X / np.where(n == 0, 1.0, n)
+            X_arr = _norm(np.array(X_tr, dtype=np.float32))
+            clf = LogisticRegression(C=1.0, max_iter=2000, solver="lbfgs",
+                                     class_weight="balanced", n_jobs=-1)
+            clf.fit(X_arr, y_tr, sample_weight=np.array(w_tr))
+            log.info(f"  Classifier: {len(clf.classes_)} classes, {len(X_tr)} training samples")
+            new_emb_norm = new_emb_arr / np.linalg.norm(new_emb_arr, axis=1, keepdims=True)
+            probs = clf.predict_proba(new_emb_norm)
+            preds = list(clf.predict(new_emb_norm))
+            confs = list(probs.max(axis=1))
+
+    # ── Write to inventory.csv and assignments.csv ───────────────────────────
+    # Include BOTH manually sorted and ML-classified photos
+    ml_uuids_set = set(new_uuids)
+    ml_inv_rows = [r for r in inbox_rows if r["uuid"] in ml_uuids_set]
+    all_inv_rows = manual_rows + ml_inv_rows
+
     inv_fields = ["uuid", "original_filename", "date", "ismissing",
                   "has_local_original", "has_local_derivative", "derivative_path",
                   "derivative_size_bytes", "uti_original", "isphoto", "ismovie"]
     with INV_CSV.open("a", newline="") as f:
         w = csv.DictWriter(f, fieldnames=inv_fields, extrasaction="ignore")
-        for r in inv_rows:
+        for r in all_inv_rows:
             r.setdefault("ismissing", "False")
             r.setdefault("has_local_original", "False")
             r.setdefault("derivative_size_bytes", "0")
@@ -284,10 +304,15 @@ def run_process():
             r.setdefault("ismovie", "False")
             w.writerow(r)
 
-    # assignments.csv: append new rows
     added = 0
     with ASSIGN_CSV.open("a", newline="") as f:
         w = csv.writer(f)
+        # Manually sorted: commit with their chosen album, conf=1.0
+        for r in manual_rows:
+            album = manual_album[r["uuid"]]
+            w.writerow([r["uuid"], album, "1.0000", "manual_inbox"])
+            added += 1
+        # ML-classified:
         for uid, pred, conf in zip(new_uuids, preds, confs):
             if conf >= CONF_MAIN:
                 album = pred
