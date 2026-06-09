@@ -668,6 +668,10 @@ async function runInboxPhase(phase) {{
     const r = await fetch('http://127.0.0.1:8765/api/inbox-count');
     const j = await r.json();
     // Counts: j.count=unsorted, j.total=all inbox, j.sorted=manually assigned
+    if (j.total === 0) {{
+      document.getElementById('inbox-bar').style.display = 'none';
+      return;
+    }}
     document.getElementById('inbox-count').textContent = j.count;
     const mx = document.getElementById('inbox-meta-extra');
     if (mx) {{
