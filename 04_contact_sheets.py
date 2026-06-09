@@ -955,7 +955,7 @@ async function inboxBatchTrash() {{
     const btn = document.getElementById('empty-thrash-btn');
     if (btn) btn.textContent = 'Empty Thrash (' + tj.count + ')';
     const bar = document.getElementById('thrash-bar');
-    if (bar) bar.style.display = tj.count === 0 ? 'none' : '';
+    if (bar) bar.style.display = tj.count === 0 ? 'none' : 'flex';
   }}
 }}
 // Click in inbox grid = toggle selection (not open modal)
