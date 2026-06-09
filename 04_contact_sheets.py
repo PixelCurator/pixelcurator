@@ -476,6 +476,41 @@ def sort_key(album_uids):
 
 albums_sorted = sorted(album_to_uids.items(), key=lambda x: x[0].lower())
 
+# Load inbox (new unprocessed photos)
+INBOX_CSV = ROOT / "metadata" / "inbox.csv"
+inbox_rows = []
+if INBOX_CSV.exists():
+    inbox_rows = [r for r in csv.DictReader(INBOX_CSV.open())
+                  if r.get("has_local_derivative") == "True" and r.get("derivative_path")]
+
+# Generate Inbox.html if there are unprocessed photos
+if inbox_rows:
+    log.info(f"Writing Inbox.html ({len(inbox_rows)} photos)...")
+    inbox_parts = [HTML_HEAD.format(
+        title="Inbox — New Photos",
+        meta=f"{len(inbox_rows)} new photos not yet classified. Assign them manually or use Auto-classify.",
+        nav='<a href="/">← Index</a> <span style="color:#888;font-size:12px">| New photos — assign manually or auto-classify from the index</span>',
+    )]
+    inbox_parts.append('<div class="legend">These photos have not been classified yet. Click to assign an album.</div>')
+    inbox_parts.append('<div id="toggleBar"><span id="hiddenCount">0 corrected hidden</span> <button onclick="toggleCorrected()">Toggle visibility</button></div>')
+    inbox_parts.append('<div class="grid">')
+    for r in inbox_rows:
+        uid = r["uuid"]
+        fn = r.get("original_filename", "")[:20]
+        date = r.get("date", "")[:10]
+        url = f"http://127.0.0.1:8765/img/{uid}"
+        inbox_parts.append(
+            f'<div class="cell" data-uuid="{uid}" data-conf="0">'
+            f'<img src="{url}" loading="lazy">'
+            f'<span class="conf" style="background:#e8a;color:#000">new</span>'
+            f'<span class="info">{html.escape(fn)} {html.escape(date)} {html.escape(uid[:8])}</span>'
+            f'<button class="trash-btn" onclick="trashOne(\'{uid}\',event)" title="Move to Thrash">🗑</button>'
+            f'</div>'
+        )
+    inbox_parts.append('</div>')
+    inbox_parts.append(HTML_TAIL)
+    (REVIEW_DIR / "Inbox.html").write_text("".join(inbox_parts))
+
 # Index page
 log.info("Writing index.html...")
 parts = [HTML_HEAD.format(
@@ -483,6 +518,57 @@ parts = [HTML_HEAD.format(
     meta=f"Total {len(uid_to_assign)} photos across {len(albums_sorted)} albums.",
     nav='<span style="color:#aaa;font-weight:600;font-size:14px">Photo Sort — Review</span>',
 )]
+parts.append(f"""
+<div id="inbox-bar" style="margin:12px 0 8px;padding:10px 14px;background:#1a1f2a;border:1px solid #7ac;border-radius:6px;display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+  <span style="font-size:13px">📥 <b>Inbox:</b> <span id="inbox-count">{"⏳" if not inbox_rows else len(inbox_rows)}</span> new photos not yet classified</span>
+  {"<a href='/Inbox.html' style='color:#7ac;font-size:13px;text-decoration:none'>View Inbox →</a>" if inbox_rows else ""}
+  <button id="inbox-scan-btn" onclick="runInboxPhase('detect')"
+    style="background:#2a4a6a;color:#7ac;border:1px solid #7ac;padding:5px 12px;border-radius:4px;cursor:pointer;font-size:12px;font-weight:600">
+    🔍 Scan for new
+  </button>
+  <button id="inbox-process-btn" onclick="runInboxPhase('process')"
+    style="background:#27ae60;color:#fff;border:0;padding:5px 12px;border-radius:4px;cursor:pointer;font-size:12px;font-weight:600;{'opacity:0.45;pointer-events:none' if not inbox_rows else ''}">
+    ⚡ Auto-classify {"(" + str(len(inbox_rows)) + " photos)" if inbox_rows else ""}
+  </button>
+  <span id="inbox-status" style="font-size:12px;color:#888"></span>
+</div>
+<div id="inbox-log-wrap" style="display:none;margin:0 0 8px;padding:8px 12px;background:#111;border-radius:4px;font-size:11px;font-family:monospace;color:#666;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"></div>
+<script>
+async function runInboxPhase(phase) {{
+  const btn = document.getElementById(phase === 'detect' ? 'inbox-scan-btn' : 'inbox-process-btn');
+  const st = document.getElementById('inbox-status');
+  const logWrap = document.getElementById('inbox-log-wrap');
+  btn.disabled = true;
+  st.textContent = phase === 'detect' ? 'Scanning Photos.app… (~30s)' : 'Embedding + classifying…';
+  st.style.color = '#888';
+  logWrap.style.display = 'block';
+  const es = new EventSource('http://127.0.0.1:8765/api/inbox-' + phase + '-stream');
+  es.onmessage = function(e) {{
+    const ev = JSON.parse(e.data);
+    if (ev.type === 'done') {{
+      st.textContent = '✓ Done' + (ev.count !== undefined ? ' — ' + ev.count + ' photos' : '') + '. Refreshing…';
+      st.style.color = '#4a8';
+      es.close();
+      setTimeout(() => location.reload(), 1200);
+    }} else if (ev.type === 'error') {{
+      st.textContent = 'Error: ' + ev.msg;
+      st.style.color = '#c55';
+      es.close();
+      btn.disabled = false;
+    }} else {{
+      logWrap.textContent = ev.msg.replace(/^.*? (INFO|WARNING) /, '');
+    }}
+  }};
+  es.onerror = function() {{
+    if (!st.textContent.startsWith('✓')) {{
+      st.textContent = 'Connection lost';
+      st.style.color = '#c55';
+      es.close();
+    }}
+  }};
+}}
+</script>
+""")
 parts.append("""
 <div id="thrash-bar" style="margin:12px 0;padding:10px 14px;background:#2a1a1a;border:1px solid #c55;border-radius:6px;display:flex;align-items:center;gap:14px">
   <span style="font-size:13px">🗑 <b>Thrash:</b> <span id="thrash-count">…</span> photos marked for deletion</span>

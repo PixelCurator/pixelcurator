@@ -76,6 +76,14 @@ with CORRECTIONS.open() as f:
         else:
             corrections.pop(r["uuid"], None)   # empty = tombstone from empty-thrash
 
+# Inbox: load derivative paths for photos not yet in inventory
+INBOX = ROOT / "metadata" / "inbox.csv"
+if INBOX.exists():
+    with INBOX.open() as f:
+        for r in csv.DictReader(f):
+            if r.get("has_local_derivative") == "True" and r.get("derivative_path"):
+                path_by_uuid[r["uuid"]] = r["derivative_path"]
+
 # Embeddings for similarity
 print(f"Loading embeddings...", flush=True)
 emb = np.load(EMB)
@@ -208,6 +216,61 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 used, ts = 0, None
             self._json({"total": total, "new_since_retrain": max(0, total - used), "last_retrain": ts}); return
+
+        if path == "/api/inbox-count":
+            inbox = ROOT / "metadata" / "inbox.csv"
+            count = 0
+            if inbox.exists():
+                with inbox.open() as f:
+                    count = sum(1 for r in csv.DictReader(f) if r.get("has_local_derivative") == "True")
+            self._json({"count": count}); return
+
+        if path in ("/api/inbox-detect-stream", "/api/inbox-process-stream"):
+            mode = "--detect" if path == "/api/inbox-detect-stream" else "--process"
+            cmd = [sys.executable, str(ROOT / "07_incremental.py"), mode]
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "keep-alive")
+            self._cors()
+            self.end_headers()
+            try:
+                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                        text=True, bufsize=1)
+                count = 0
+                for line in proc.stdout:
+                    line = line.rstrip()
+                    if line:
+                        if line.startswith("RESULT:"):
+                            count = int(line.split(":")[1])
+                        payload = json.dumps({"type": "log", "msg": line})
+                        self.wfile.write(f"data: {payload}\n\n".encode())
+                        self.wfile.flush()
+                proc.wait()
+                if proc.returncode == 0:
+                    # Reload paths from inbox.csv so thumbnails are immediately servable
+                    inbox = ROOT / "metadata" / "inbox.csv"
+                    if inbox.exists():
+                        with inbox.open() as f:
+                            for r in csv.DictReader(f):
+                                if r.get("has_local_derivative") == "True" and r.get("derivative_path"):
+                                    path_by_uuid[r["uuid"]] = r["derivative_path"]
+                    if mode == "--process":
+                        reload_state()
+                    payload = json.dumps({"type": "done", "count": count})
+                else:
+                    payload = json.dumps({"type": "error", "msg": f"exit {proc.returncode}"})
+                self.wfile.write(f"data: {payload}\n\n".encode())
+                self.wfile.flush()
+            except BrokenPipeError:
+                pass
+            except Exception as e:
+                try:
+                    self.wfile.write(f"data: {json.dumps({'type':'error','msg':str(e)})}\n\n".encode())
+                    self.wfile.flush()
+                except Exception:
+                    pass
+            return
 
         if path == "/api/retrain-stream":
             global _retrain_running
