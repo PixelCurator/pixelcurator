@@ -14,6 +14,7 @@ Endpoints:
 import csv
 import datetime as dt
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -23,7 +24,7 @@ from pathlib import Path
 
 import numpy as np
 
-ROOT = Path.home() / "photo-sort"
+ROOT = Path(os.environ.get("PIXEL_ROOT", str(Path.home() / "photo-sort")))
 REVIEW = ROOT / "review"
 INV = ROOT / "metadata" / "inventory.csv"
 ASSIGN = ROOT / "metadata" / "assignments.csv"
@@ -33,7 +34,7 @@ CORRECTIONS = ROOT / "metadata" / "corrections.csv"
 EMB = ROOT / "embeddings" / "clip_vitb32.npy"
 IDX = ROOT / "embeddings" / "clip_vitb32_uuids.json"
 
-PORT = 8765
+PORT = int(os.environ.get("PIXEL_PORT", "8765"))
 BIND = "127.0.0.1"
 
 # uuid -> derivative path
@@ -94,8 +95,8 @@ print(f"  {emb.shape} loaded", flush=True)
 
 _lock = threading.Lock()
 _retrain_running = False
-_undo_stack = deque(maxlen=10)
-_redo_stack = deque(maxlen=10)
+_undo_stack = deque(maxlen=1)
+_redo_stack = deque(maxlen=1)
 
 
 def current_album(uid: str) -> str:
@@ -220,7 +221,8 @@ class Handler(BaseHTTPRequestHandler):
                 "redo_count": len(_redo_stack),
             }); return
         if path == "/api/retrain-status":
-            total = len(corrections)
+            _skip = {"Thrash", "_test_"}
+            total = sum(1 for v in corrections.values() if v not in _skip)
             last_file = ROOT / "metadata" / "last_retrain.json"
             if last_file.exists():
                 import json as _json
@@ -383,6 +385,17 @@ class Handler(BaseHTTPRequestHandler):
             if not target.exists() and target.suffix == "":
                 target = target.with_suffix(".html")
 
+        # Thrash.html / Inbox.html: regenerate on-demand if missing
+        if not target.exists() and target.name in ("Thrash.html", "Inbox.html"):
+            subprocess.run([sys.executable, str(ROOT / "04_contact_sheets.py")],
+                           capture_output=True, timeout=120)
+            # If still missing after regen (Thrash empty / inbox empty), redirect to index
+            if not target.exists():
+                self.send_response(302)
+                self.send_header("Location", "/")
+                self.end_headers()
+                return
+
         if target.exists():
             ctype = "text/html; charset=utf-8" if target.suffix == ".html" else (
                 "text/javascript; charset=utf-8" if target.suffix == ".js" else
@@ -409,7 +422,17 @@ class Handler(BaseHTTPRequestHandler):
                     target_album = ch["prev"] if is_undo else ch["new"]
                     if target_album:
                         apply_correction(ch["uuid"], target_album, tag)
-                        rev_changes.append({"uuid": ch["uuid"], "prev": ch["new"] if is_undo else ch["prev"], "new": target_album})
+                    else:
+                        # prev was "" (inbox photo, no prior album) → tombstone = back to unsorted
+                        with _lock:
+                            ts = dt.datetime.utcnow().isoformat()
+                            with CORRECTIONS.open("a", newline="") as f:
+                                csv.writer(f).writerow([ch["uuid"], "", ts, tag])
+                            corrections.pop(ch["uuid"], None)
+                    # Keep original prev/new semantics so the reverse-action
+                    # (redo after undo, or undo after redo) applies the right album.
+                    # Undo handler uses ch["prev"]; redo handler uses ch["new"].
+                    rev_changes.append({"uuid": ch["uuid"], "prev": ch["prev"], "new": ch["new"]})
                 dst_stack.append({
                     "type": "reassign",
                     "desc": ("↩ " if is_undo else "↪ ") + action["desc"],
@@ -524,7 +547,41 @@ class Handler(BaseHTTPRequestHandler):
                     "changes": changes,
                 })
                 _redo_stack.clear()
+            # If trashed, regenerate sheets in background so Thrash.html is ready
+            if album == "Thrash" and changes:
+                threading.Thread(
+                    target=lambda: subprocess.run(
+                        [sys.executable, str(ROOT / "04_contact_sheets.py")],
+                        capture_output=True, timeout=120),
+                    daemon=True).start()
             self._json({"ok": True, "count": len(changes), "album": album}); return
+
+        # Test-only endpoint: reloads corrections from CSV + clears undo/redo.
+        # Only available when PIXEL_TEST_MODE=1 is set in the environment.
+        if self.path == "/api/test-reset" and os.environ.get("PIXEL_TEST_MODE") == "1":
+            with _lock:
+                corrections.clear()
+                with CORRECTIONS.open() as _f:
+                    for _r in csv.DictReader(_f):
+                        if _r["new_album"]:
+                            corrections[_r["uuid"]] = _r["new_album"]
+                        else:
+                            corrections.pop(_r["uuid"], None)
+                _undo_stack.clear()
+                _redo_stack.clear()
+            self._json({"ok": True, "corrections": len(corrections)}); return
+
+        if self.path == "/api/restore":
+            body = self._read_body()
+            uid = body.get("uuid", "").strip()
+            if not uid:
+                self._json({"error": "uuid required"}, 400); return
+            with _lock:
+                ts = dt.datetime.utcnow().isoformat()
+                with CORRECTIONS.open("a", newline="") as f:
+                    csv.writer(f).writerow([uid, "", ts, "restore"])
+                corrections.pop(uid, None)
+            self._json({"ok": True, "uuid": uid}); return
 
         if self.path == "/api/retrain":
             body = self._read_body()
@@ -701,22 +758,49 @@ class Handler(BaseHTTPRequestHandler):
                 for u in thrash_uids:
                     corrections.pop(u, None)
                     path_by_uuid.pop(u, None)
+                # Empty Trash is irreversible — clear undo/redo so bar disappears
+                _undo_stack.clear()
+                _redo_stack.clear()
             # Remove trashed UUIDs from inbox.csv (they're deleted, shouldn't reappear)
             inbox_path = ROOT / "metadata" / "inbox.csv"
+            thrash_set = set(thrash_uids)
+            trashed_inbox_rows: list = []
             if inbox_path.exists():
-                thrash_set = set(thrash_uids)
                 with inbox_path.open() as f:
                     rdr = csv.DictReader(f)
                     fields = rdr.fieldnames or []
                     all_rows = list(rdr)
+                trashed_inbox_rows = [r for r in all_rows if r.get("uuid") in thrash_set]
                 remaining = [r for r in all_rows if r.get("uuid") not in thrash_set]
                 with inbox_path.open("w", newline="") as f:
                     w = csv.DictWriter(f, fieldnames=fields)
                     w.writeheader()
                     w.writerows(remaining)
-                if len(remaining) < len(all_rows):
-                    subprocess.run([sys.executable, str(ROOT / "04_contact_sheets.py")],
-                                   capture_output=True, timeout=120)
+            # Add trashed inbox photos to inventory.csv so detect never re-finds them
+            inv_path = ROOT / "metadata" / "inventory.csv"
+            if inv_path.exists() and trashed_inbox_rows:
+                inv_fields = ["uuid","original_filename","date","ismissing",
+                              "has_local_original","has_local_derivative","derivative_path",
+                              "derivative_size_bytes","uti_original","isphoto","ismovie"]
+                with inv_path.open("a", newline="") as f:
+                    w = csv.DictWriter(f, fieldnames=inv_fields, extrasaction="ignore")
+                    for r in trashed_inbox_rows:
+                        w.writerow({
+                            "uuid": r["uuid"],
+                            "original_filename": r.get("original_filename", ""),
+                            "date": r.get("date", ""),
+                            "ismissing": "True",
+                            "has_local_original": "False",
+                            "has_local_derivative": "False",
+                            "derivative_path": r.get("derivative_path", ""),
+                            "derivative_size_bytes": "0",
+                            "uti_original": "",
+                            "isphoto": "True",
+                            "ismovie": "False",
+                        })
+            # Regenerate sheets to remove deleted photos from all views
+            subprocess.run([sys.executable, str(ROOT / "04_contact_sheets.py")],
+                           capture_output=True, timeout=120)
             self._json({"ok": True, "deleted": len(thrash_uids), "message": rc.stdout.strip()}); return
 
         self.send_error(404)
