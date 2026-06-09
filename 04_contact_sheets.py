@@ -562,6 +562,41 @@ parts = [HTML_HEAD.format(
     meta=f"Total {len(uid_to_assign):,} photos across {len(albums_sorted)} albums.&nbsp;<span id='inbox-meta-extra' style='color:#7ac'></span>",
     nav='<span style="color:#aaa;font-weight:600;font-size:14px">Photo Sort — Review</span>',
 )]
+# Undo/Redo bar — very top, only visible when steps exist
+parts.append("""
+<div id="undo-bar" style="display:none;margin:0 0 8px;padding:7px 12px;background:#1a1a1a;border-radius:4px;align-items:center;gap:10px;font-size:12px">
+  <button id="undo-btn" onclick="doUndoRedo('undo')" disabled
+    style="background:#333;color:#aaa;border:0;padding:3px 10px;border-radius:3px;cursor:pointer;font-size:12px">↩ Undo</button>
+  <span id="undo-desc" style="color:#555;flex:1">—</span>
+  <button id="redo-btn" onclick="doUndoRedo('redo')" disabled
+    style="background:#333;color:#aaa;border:0;padding:3px 10px;border-radius:3px;cursor:pointer;font-size:12px">Redo ↪</button>
+</div>
+<script>
+(async () => {
+  try {
+    const r = await fetch('http://127.0.0.1:8765/api/undo-status');
+    const j = await r.json();
+    if (!j.can_undo && !j.can_redo) return;
+    const bar = document.getElementById('undo-bar');
+    bar.style.display = 'flex';
+    const ub = document.getElementById('undo-btn');
+    const rb = document.getElementById('redo-btn');
+    const ud = document.getElementById('undo-desc');
+    ub.disabled = !j.can_undo;
+    rb.disabled = !j.can_redo;
+    ub.style.color = j.can_undo ? '#eee' : '#555';
+    rb.style.color = j.can_redo ? '#eee' : '#555';
+    if (j.undo_desc) ud.textContent = j.undo_desc + (j.undo_count > 1 ? ` (+${j.undo_count - 1} more)` : '');
+  } catch(e) {}
+})();
+async function doUndoRedo(action) {
+  const r = await fetch('http://127.0.0.1:8765/api/' + action, {method:'POST'});
+  const j = await r.json();
+  if (j.ok) location.reload();
+  else alert((action === 'undo' ? 'Undo' : 'Redo') + ' failed: ' + (j.error || 'unknown'));
+}
+</script>
+""")
 # Retrain bar — top of page
 parts.append("""
 <div id="retrain-bar" style="margin:8px 0 16px;padding:10px 14px;background:#1a2a1a;border:1px solid #4a8;border-radius:6px">
@@ -654,37 +689,6 @@ function doRetrain() {
       es.close();
     }
   };
-}
-</script>
-""")
-parts.append("""
-<div id="undo-bar" style="margin:8px 0 6px;padding:7px 12px;background:#1a1a1a;border-radius:4px;display:flex;align-items:center;gap:10px;font-size:12px">
-  <button id="undo-btn" onclick="doUndoRedo('undo')" disabled
-    style="background:#333;color:#aaa;border:0;padding:3px 10px;border-radius:3px;cursor:pointer;font-size:12px">↩ Undo</button>
-  <span id="undo-desc" style="color:#555;flex:1">—</span>
-  <button id="redo-btn" onclick="doUndoRedo('redo')" disabled
-    style="background:#333;color:#aaa;border:0;padding:3px 10px;border-radius:3px;cursor:pointer;font-size:12px">Redo ↪</button>
-</div>
-<script>
-(async () => {
-  try {
-    const r = await fetch('http://127.0.0.1:8765/api/undo-status');
-    const j = await r.json();
-    const ub = document.getElementById('undo-btn');
-    const rb = document.getElementById('redo-btn');
-    const ud = document.getElementById('undo-desc');
-    ub.disabled = !j.can_undo;
-    rb.disabled = !j.can_redo;
-    ub.style.color = j.can_undo ? '#eee' : '#555';
-    rb.style.color = j.can_redo ? '#eee' : '#555';
-    if (j.undo_desc) ud.textContent = j.undo_desc + (j.undo_count > 1 ? ` (+${j.undo_count - 1} more)` : '');
-  } catch(e) {}
-})();
-async function doUndoRedo(action) {
-  const r = await fetch('http://127.0.0.1:8765/api/' + action, {method:'POST'});
-  const j = await r.json();
-  if (j.ok) location.reload();
-  else alert((action === 'undo' ? 'Undo' : 'Redo') + ' failed: ' + (j.error || 'unknown'));
 }
 </script>
 """)
