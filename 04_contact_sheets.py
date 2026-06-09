@@ -799,7 +799,26 @@ async function runInboxPhase(phase) {{
 if inbox_rows:
     _ibox_ps = 48
     parts.append(f"""
+<style>
+  #inbox-grid .cell.inbox-selected {{ outline:3px solid #7ac; opacity:.9; }}
+  #inbox-grid .cell {{ cursor:pointer; }}
+</style>
 <div id="inbox-section" style="margin:-1px 0 12px;padding:10px 16px 14px;background:#111d2a;border:1px solid #7ac;border-top:none;border-radius:0 0 6px 6px">
+  <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;flex-wrap:wrap">
+    <button id="inbox-sel-all-btn" onclick="inboxToggleSelectAll()"
+      style="background:#1a2a3a;color:#7ac;border:1px solid #7ac;padding:3px 10px;border-radius:3px;cursor:pointer;font-size:12px">☐ Select all</button>
+    <div id="inbox-batch-bar" style="display:none;align-items:center;gap:8px;flex-wrap:wrap">
+      <span id="inbox-sel-count" style="font-size:12px;color:#7ac;font-weight:600"></span>
+      <select id="inbox-batch-album"
+        style="background:#222;color:#eee;border:1px solid #444;padding:3px 8px;border-radius:3px;font-size:12px;max-width:180px"></select>
+      <button onclick="inboxBatchAssign()"
+        style="background:#27ae60;color:#fff;border:0;padding:3px 10px;border-radius:3px;cursor:pointer;font-size:12px;font-weight:600">Assign →</button>
+      <button onclick="inboxBatchTrash()"
+        style="background:#c44;color:#fff;border:0;padding:3px 10px;border-radius:3px;cursor:pointer;font-size:12px">🗑 Trash</button>
+      <button onclick="inboxDeselectAll()"
+        style="background:none;color:#555;border:0;padding:3px 6px;cursor:pointer;font-size:14px">✕</button>
+    </div>
+  </div>
   <div id="inbox-grid" class="grid" style="margin-top:4px">""")
     for _r in inbox_rows:
         _uid = _r["uuid"]
@@ -865,6 +884,77 @@ function inboxNextPage() {{
   const uncorrected = _iboxCells.filter(c => !c.classList.contains('corrected'));
   if (_iboxPage < Math.ceil(uncorrected.length / {_ibox_ps}) - 1) {{ _iboxPage++; _renderInbox(); }}
 }}
+
+// ── Inbox selection & batch actions ─────────────────────────────────────────
+let _inboxAlbumsLoaded = false;
+async function _loadInboxBatchAlbums() {{
+  if (_inboxAlbumsLoaded) return;
+  const r = await fetch('http://127.0.0.1:8765/api/albums');
+  const albs = await r.json();
+  const sel = document.getElementById('inbox-batch-album');
+  sel.innerHTML = albs.map(a => `<option value="${{a}}">${{a}}</option>`).join('');
+  _inboxAlbumsLoaded = true;
+}}
+function _inboxVisible() {{
+  return _iboxCells.filter(c => c.style.display !== 'none' && !c.classList.contains('corrected'));
+}}
+function _inboxSelected() {{
+  return _iboxCells.filter(c => c.classList.contains('inbox-selected'));
+}}
+function _updateBatchBar() {{
+  const sel = _inboxSelected();
+  const bar = document.getElementById('inbox-batch-bar');
+  const cnt = document.getElementById('inbox-sel-count');
+  if (bar) bar.style.display = sel.length > 0 ? 'flex' : 'none';
+  if (cnt) cnt.textContent = sel.length + ' selected';
+  if (sel.length > 0) _loadInboxBatchAlbums();
+  const btn = document.getElementById('inbox-sel-all-btn');
+  if (!btn) return;
+  const vis = _inboxVisible();
+  btn.textContent = vis.length > 0 && vis.every(c => c.classList.contains('inbox-selected'))
+    ? '☑ Deselect all' : '☐ Select all';
+}}
+function inboxToggleSelectAll() {{
+  const vis = _inboxVisible();
+  const allSel = vis.every(c => c.classList.contains('inbox-selected'));
+  vis.forEach(c => c.classList.toggle('inbox-selected', !allSel));
+  _updateBatchBar();
+}}
+function inboxDeselectAll() {{
+  _iboxCells.forEach(c => c.classList.remove('inbox-selected'));
+  _updateBatchBar();
+}}
+async function inboxBatchAssign() {{
+  const uuids = _inboxSelected().map(c => c.dataset.uuid);
+  if (!uuids.length) return;
+  const album = document.getElementById('inbox-batch-album').value;
+  if (!album) return;
+  const r = await fetch('http://127.0.0.1:8765/api/reassign', {{
+    method:'POST', headers:{{'Content-Type':'application/json'}},
+    body: JSON.stringify({{uuids, new_album: album, source:'manual'}})
+  }});
+  const j = await r.json();
+  if (j.ok) {{ for (const u of uuids) markCellCorrected(u, album); inboxDeselectAll(); }}
+}}
+async function inboxBatchTrash() {{
+  const uuids = _inboxSelected().map(c => c.dataset.uuid);
+  if (!uuids.length) return;
+  const r = await fetch('http://127.0.0.1:8765/api/reassign', {{
+    method:'POST', headers:{{'Content-Type':'application/json'}},
+    body: JSON.stringify({{uuids, new_album:'Thrash', source:'trash'}})
+  }});
+  const j = await r.json();
+  if (j.ok) {{ for (const u of uuids) markCellCorrected(u, 'Thrash', true); inboxDeselectAll(); }}
+}}
+// Click in inbox grid = toggle selection (not open modal)
+document.getElementById('inbox-grid').addEventListener('click', function(e) {{
+  if (e.target.closest('.trash-btn')) return;
+  const cell = e.target.closest('.cell[data-uuid]');
+  if (!cell) return;
+  e.stopPropagation();
+  cell.classList.toggle('inbox-selected');
+  _updateBatchBar();
+}});
 _renderInbox();
 </script>
 """)
