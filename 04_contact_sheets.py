@@ -1032,7 +1032,7 @@ async function doEmptyThrash() {
     document.getElementById('thrash-count').textContent = '0';
     document.getElementById('empty-thrash-btn').textContent = 'Empty Thrash (0)';
     document.getElementById('empty-thrash-btn').disabled = true;
-    setTimeout(closeEmptyThrash, 2000);
+    setTimeout(() => { closeEmptyThrash(); document.getElementById('thrash-bar').style.display = 'none'; }, 2000);
   } else {
     document.getElementById('empty-thrash-status').textContent = 'Error: ' + (j.error || 'unknown');
     document.getElementById('empty-thrash-status').style.color = '#c55';
