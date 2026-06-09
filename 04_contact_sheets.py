@@ -95,6 +95,10 @@ HTML_HEAD = """<!doctype html>
   .cell .info{{position:absolute;bottom:0;left:0;right:0;background:rgba(0,0,0,0.7);font-size:9px;padding:2px 4px;font-family:monospace;color:#ccc;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
   .cell .conf{{position:absolute;top:2px;right:2px;background:rgba(255,255,255,0.85);color:#000;font-size:9px;padding:1px 4px;border-radius:2px;font-weight:600}}
   .cell .moved{{position:absolute;top:2px;left:2px;background:#4a8;color:#000;font-size:9px;padding:1px 4px;border-radius:2px;font-weight:600}}
+  .cell .trash-btn{{position:absolute;bottom:4px;right:4px;background:#c44;color:#fff;border:0;border-radius:3px;font-size:13px;width:22px;height:22px;cursor:pointer;display:none;line-height:22px;text-align:center;padding:0;z-index:10;box-shadow:0 1px 4px rgba(0,0,0,0.6)}}
+  .cell:hover .trash-btn{{display:block}}
+  .cell.trashed{{border-color:#c55 !important}}
+  .cell.trashed .moved{{background:#c55}}
   .nav{{margin:16px 0;padding:8px;background:#1a1a1a;border-radius:4px}}
   .nav a{{color:#7ac;margin-right:12px;text-decoration:none}}
   .suggestions{{background:#1c2530;padding:8px 12px;border-left:3px solid #4a8;margin:12px 0;font-size:13px}}
@@ -121,7 +125,7 @@ HTML_HEAD = """<!doctype html>
   #modal .closebtn{{position:absolute;top:12px;right:16px;background:none;color:#888;font-size:24px;border:0;cursor:pointer}}
   #modal .album-badge{{display:inline-block;background:#333;color:#aaa;padding:2px 8px;border-radius:3px;font-size:11px;margin-left:6px}}
 </style></head><body>
-<div class="nav"><a href="/">← Index</a> <span style="color:#888;font-size:12px">| Click photo to reassign · Modal: Esc closes · Cmd/Ctrl+S saves</span></div>
+<div class="nav">{nav}</div>
 <h1>{title}</h1>
 <div class="meta">{meta}</div>
 """
@@ -139,8 +143,10 @@ HTML_TAIL = """
         <select id="m-album"></select>
         <div style="margin-top:6px"><input id="m-new-album" type="text" placeholder="…or type a new album name"></div>
         <div style="margin-top:12px">
+          <button id="m-confirm-btn" onclick="confirmOne()" style="background:#27ae60;color:#fff;display:none">✓ Confirm</button>
           <button onclick="saveOne()">Save this photo</button>
           <button class="secondary" onclick="loadSimilar()">Find similar →</button>
+          <button class="danger" onclick="trashModal()" style="margin-top:6px">🗑 Thrash</button>
         </div>
         <div id="m-status" style="margin-top:10px;color:#888;font-size:12px"></div>
       </div>
@@ -159,6 +165,7 @@ HTML_TAIL = """
 <script>
 let albums = [];
 let activeUuid = null;
+let currentAlbum = null;
 let similarItems = [];
 
 async function loadAlbums() {
@@ -179,13 +186,42 @@ function setStatus(msg, color='#888') {
   el.textContent = msg; el.style.color = color;
 }
 
+// Returns the next non-corrected uuid after activeUuid in the grid
+function getNextUuid() {
+  const cells = [...document.querySelectorAll('.grid .cell[data-uuid]')];
+  const idx = cells.findIndex(c => c.dataset.uuid === activeUuid);
+  for (let i = idx + 1; i < cells.length; i++) {
+    if (!cells[i].classList.contains('corrected')) return cells[i].dataset.uuid;
+  }
+  return null;
+}
+
+async function advanceModal() {
+  const next = getNextUuid();
+  if (next) {
+    await openModal(next);
+  } else {
+    closeModal();
+  }
+}
+
 async function openModal(uuid) {
   await loadAlbums();
   activeUuid = uuid;
   document.getElementById('m-img').src = `http://127.0.0.1:8765/img/${uuid}`;
   document.getElementById('m-title').textContent = `Reassign ${uuid.slice(0,8)}…`;
   const cur = await (await fetch(`http://127.0.0.1:8765/api/current?uuid=${uuid}`)).json();
+  currentAlbum = cur.album;
   document.getElementById('m-current').textContent = cur.album + (cur.corrected ? ' (corrected)' : '');
+  // Show/hide Confirm button
+  const confirmBtn = document.getElementById('m-confirm-btn');
+  if (cur.album.endsWith('-unsure')) {
+    const mainAlbum = cur.album.slice(0, -'-unsure'.length);
+    confirmBtn.textContent = `✓ Confirm → ${mainAlbum}`;
+    confirmBtn.style.display = '';
+  } else {
+    confirmBtn.style.display = 'none';
+  }
   const sel = document.getElementById('m-album');
   let target = cur.album;
   if (target.endsWith('-unsure')) {
@@ -222,14 +258,49 @@ async function saveOne() {
   if (j.ok) {
     setStatus(`saved → ${album}`, '#4a8');
     markCellCorrected(activeUuid, album);
+    await advanceModal();
   } else setStatus('error: ' + (j.error || 'unknown'), '#c55');
+}
+
+async function confirmOne() {
+  if (!currentAlbum || !currentAlbum.endsWith('-unsure')) return;
+  const album = currentAlbum.slice(0, -'-unsure'.length);
+  const r = await fetch('http://127.0.0.1:8765/api/reassign', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({uuid: activeUuid, new_album: album, source: 'confirm'})
+  });
+  const j = await r.json();
+  if (j.ok) {
+    markCellCorrected(activeUuid, album);
+    await advanceModal();
+  } else setStatus('error: ' + (j.error || 'unknown'), '#c55');
+}
+
+// Trash a single uuid — callable from grid (event) or modal (no event)
+async function trashOne(uuid, event) {
+  if (event) event.stopPropagation();
+  const r = await fetch('http://127.0.0.1:8765/api/reassign', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({uuid, new_album: 'Thrash', source: 'trash'})
+  });
+  const j = await r.json();
+  if (j.ok) markCellCorrected(uuid, 'Thrash', true);
+}
+
+// Trash from modal then advance
+async function trashModal() {
+  await trashOne(activeUuid, null);
+  await advanceModal();
 }
 
 async function loadSimilar() {
   setStatus('searching similar…');
-  const r = await fetch(`http://127.0.0.1:8765/api/similar?uuid=${activeUuid}&n=24`);
+  const target = targetAlbum();
+  // Fetch extra candidates so we still have 24 after filtering out the target album
+  const r = await fetch(`http://127.0.0.1:8765/api/similar?uuid=${activeUuid}&n=96`);
   const j = await r.json();
-  similarItems = j.similar;
+  // Only show photos NOT already in the target album
+  similarItems = j.similar.filter(s => s.album !== target).slice(0, 24);
   const grid = document.getElementById('m-similar');
   grid.innerHTML = '';
   for (const s of similarItems) {
@@ -241,7 +312,8 @@ async function loadSimilar() {
     grid.appendChild(cell);
   }
   document.getElementById('m-similar-wrap').style.display = '';
-  setStatus(`${similarItems.length} similar found. Click to select then reassign.`);
+  const skipped = j.similar.length - j.similar.filter(s => s.album !== target).slice(0, 24).length;
+  setStatus(`${similarItems.length} similar from other albums (filtered ${j.similar.filter(s=>s.album===target).length} already in "${target}").`);
 }
 
 function selectAll(yes) {
@@ -255,28 +327,30 @@ async function saveSelected() {
   if (!album) { setStatus('no album', '#c55'); return; }
   const sel = [...document.querySelectorAll('#m-similar .cell.selected')].map(c => c.dataset.uuid);
   if (!sel.length) { setStatus('nothing selected', '#c55'); return; }
+  const allUuids = [activeUuid, ...sel.filter(u => u !== activeUuid)];
   const r = await fetch('http://127.0.0.1:8765/api/reassign', {
     method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({uuids: sel, new_album: album, source: 'similar-batch'})
+    body: JSON.stringify({uuids: allUuids, new_album: album, source: 'similar-batch'})
   });
   const j = await r.json();
   if (j.ok) {
-    setStatus(`saved ${sel.length} → ${album}`, '#4a8');
-    for (const u of sel) markCellCorrected(u, album);
+    setStatus(`saved ${allUuids.length} → ${album}`, '#4a8');
+    for (const u of allUuids) markCellCorrected(u, album);
+    await advanceModal();
   } else setStatus('error: ' + (j.error || 'unknown'), '#c55');
 }
 
-function markCellCorrected(uuid, album) {
+function markCellCorrected(uuid, album, isTrashed=false) {
   for (const cell of document.querySelectorAll(`.cell[data-uuid="${uuid}"]`)) {
-    // only hide in main grid (not inside the modal's similar grid)
     if (cell.closest('#modal')) continue;
     cell.classList.add('corrected');
+    if (isTrashed) cell.classList.add('trashed');
     let moved = cell.querySelector('.moved');
     if (!moved) {
       moved = document.createElement('span'); moved.className = 'moved';
       cell.appendChild(moved);
     }
-    moved.textContent = '→ ' + album.slice(0,12);
+    moved.textContent = isTrashed ? '🗑' : ('→ ' + album.slice(0,12));
   }
   updateHiddenCount();
 }
@@ -294,11 +368,14 @@ function toggleCorrected() {
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape') closeModal();
   if ((e.key === 's' || e.key === 'S') && (e.metaKey || e.ctrlKey)) { e.preventDefault(); saveOne(); }
+  if (e.key === 'ArrowRight' && document.getElementById('modal').classList.contains('open')) { e.preventDefault(); advanceModal(); }
+  if (e.key === 'Delete' && document.getElementById('modal').classList.contains('open')) { e.preventDefault(); trashModal(); }
 });
 
 document.addEventListener('click', e => {
+  // Trash button in grid — stops propagation itself via onclick
   const cell = e.target.closest('.cell[data-uuid]');
-  if (cell && !cell.closest('#modal')) {
+  if (cell && !cell.closest('#modal') && !e.target.closest('.trash-btn')) {
     openModal(cell.dataset.uuid);
   }
 });
@@ -307,7 +384,9 @@ document.addEventListener('click', e => {
 (async () => {
   const r = await fetch('http://127.0.0.1:8765/api/corrections');
   const c = await r.json();
-  for (const [uuid, album] of Object.entries(c)) markCellCorrected(uuid, album);
+  for (const [uuid, album] of Object.entries(c)) {
+    markCellCorrected(uuid, album, album === 'Thrash');
+  }
 })();
 </script>
 </body></html>
@@ -316,12 +395,16 @@ document.addEventListener('click', e => {
 
 def render_sheet(album: str, uids: list) -> str:
     n_total = len(uids)
+    # Sort by confidence descending (most certain first)
+    def conf_of(u):
+        return uid_to_assign[u][1] if u in uid_to_assign else 0.0
+    uids_sorted = sorted(uids, key=conf_of, reverse=False)
+
     if n_total > MAX_PHOTOS_PER_SHEET:
-        random.seed(RANDOM_SEED)
-        shown = random.sample(uids, MAX_PHOTOS_PER_SHEET)
-        sample_note = f" (showing {MAX_PHOTOS_PER_SHEET} random of {n_total})"
+        shown = uids_sorted[:MAX_PHOTOS_PER_SHEET]
+        sample_note = f" (showing {MAX_PHOTOS_PER_SHEET} least-confident of {n_total})"
     else:
-        shown = uids
+        shown = uids_sorted
         sample_note = ""
 
     # cluster suggestions block
@@ -343,6 +426,7 @@ def render_sheet(album: str, uids: list) -> str:
     parts = [HTML_HEAD.format(
         title=html.escape(album),
         meta=f"{n_total} photos{sample_note}",
+        nav='<a href="/">← Index</a> <span style="color:#888;font-size:12px">| Click photo to reassign · Modal: Esc closes · Cmd/Ctrl+S saves</span>',
     )]
     parts.append(sugg_html)
     parts.append('<div class="legend">Confidence in top-right. Click image to open modal · corrected photos auto-hidden.</div>')
@@ -358,10 +442,11 @@ def render_sheet(album: str, uids: list) -> str:
         date = uid_to_date.get(uid, "")[:10]
         url = img_url(uid)
         parts.append(
-            f'<div class="cell" data-uuid="{uid}">'
+            f'<div class="cell" data-uuid="{uid}" data-conf="{conf:.4f}">'
             f'<img src="{url}" loading="lazy">'
             f'<span class="conf">{conf_label}</span>'
             f'<span class="info">{html.escape(fn)} {html.escape(date)} {html.escape(uid[:8])}</span>'
+            f'<button class="trash-btn" onclick="trashOne(\'{uid}\',event)" title="Move to Thrash">🗑</button>'
             f'</div>'
         )
     parts.append('</div>')
@@ -386,15 +471,194 @@ def sort_key(album_uids):
     return (1, 1, -n)
 
 
-albums_sorted = sorted(album_to_uids.items(), key=sort_key)
+albums_sorted = sorted(album_to_uids.items(), key=lambda x: x[0].lower())
 
 # Index page
 log.info("Writing index.html...")
-parts = [HTML_HEAD.format(title="Photo Sort — Review Index", meta=f"Total {len(uid_to_assign)} photos across {len(albums_sorted)} albums.")]
-parts.append('<table style="width:100%;border-collapse:collapse">')
-parts.append('<tr style="background:#1a1a1a"><th style="text-align:left;padding:6px">Album</th><th style="text-align:right;padding:6px">Count</th><th style="text-align:left;padding:6px">Suggestion</th></tr>')
-for album, uids in albums_sorted:
+parts = [HTML_HEAD.format(
+    title="Photo Sort — Review Index",
+    meta=f"Total {len(uid_to_assign)} photos across {len(albums_sorted)} albums.",
+    nav='<span style="color:#aaa;font-weight:600;font-size:14px">Photo Sort — Review</span>',
+)]
+parts.append("""
+<div id="thrash-bar" style="margin:12px 0;padding:10px 14px;background:#2a1a1a;border:1px solid #c55;border-radius:6px;display:flex;align-items:center;gap:14px">
+  <span style="font-size:13px">🗑 <b>Thrash:</b> <span id="thrash-count">…</span> photos marked for deletion</span>
+  <button id="empty-thrash-btn" onclick="openEmptyThrash()" style="background:#c55;color:#fff;border:0;padding:6px 14px;border-radius:4px;cursor:pointer;font-weight:600;font-size:13px">Empty Thrash</button>
+  <a id="view-thrash-link" href="/Thrash.html" style="color:#c55;font-size:13px;text-decoration:none">View Thrash →</a>
+</div>
+<div id="empty-thrash-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:200;align-items:center;justify-content:center">
+  <div style="background:#1a1a1a;border:1px solid #c55;border-radius:8px;padding:28px 32px;max-width:420px;width:100%">
+    <h2 style="margin:0 0 10px;color:#c55">⚠️ Empty Thrash</h2>
+    <p id="empty-thrash-msg" style="color:#ccc;font-size:14px;margin:0 0 16px"></p>
+    <p style="color:#888;font-size:12px;margin:0 0 12px">This moves photos to <b>Recently Deleted</b> in Photos.app. iCloud will sync this to all devices. You have 30 days to recover them.</p>
+    <p style="color:#888;font-size:12px;margin:0 0 16px">Type <b>DELETE</b> to confirm:</p>
+    <input id="empty-thrash-confirm" type="text" placeholder="DELETE" style="background:#222;color:#eee;border:1px solid #555;padding:8px;border-radius:4px;font-size:14px;width:100%;box-sizing:border-box;margin-bottom:14px">
+    <div>
+      <button onclick="doEmptyThrash()" style="background:#c55;color:#fff;border:0;padding:8px 18px;border-radius:4px;cursor:pointer;font-weight:600;margin-right:8px">Delete from Photos.app</button>
+      <button onclick="closeEmptyThrash()" style="background:#444;color:#eee;border:0;padding:8px 14px;border-radius:4px;cursor:pointer">Cancel</button>
+    </div>
+    <div id="empty-thrash-status" style="margin-top:10px;font-size:13px;color:#888"></div>
+  </div>
+</div>
+<script>
+(async () => {
+  const r = await fetch('http://127.0.0.1:8765/api/thrash-count');
+  const j = await r.json();
+  document.getElementById('thrash-count').textContent = j.count;
+  if (j.count === 0) {
+    document.getElementById('thrash-bar').style.display = 'none';
+  } else {
+    document.getElementById('empty-thrash-btn').textContent = `Empty Thrash (${j.count})`;
+  }
+})();
+function openEmptyThrash() {
+  const count = document.getElementById('thrash-count').textContent;
+  document.getElementById('empty-thrash-msg').textContent = `${count} photos will be moved to Recently Deleted in Photos.app.`;
+  document.getElementById('empty-thrash-confirm').value = '';
+  document.getElementById('empty-thrash-status').textContent = '';
+  document.getElementById('empty-thrash-modal').style.display = 'flex';
+}
+function closeEmptyThrash() {
+  document.getElementById('empty-thrash-modal').style.display = 'none';
+}
+async function doEmptyThrash() {
+  const confirm = document.getElementById('empty-thrash-confirm').value.trim();
+  if (confirm !== 'DELETE') {
+    document.getElementById('empty-thrash-status').textContent = 'Type DELETE to confirm.';
+    document.getElementById('empty-thrash-status').style.color = '#c55';
+    return;
+  }
+  document.getElementById('empty-thrash-status').textContent = 'Deleting…';
+  document.getElementById('empty-thrash-status').style.color = '#888';
+  const r = await fetch('http://127.0.0.1:8765/api/empty-thrash', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({confirm: 'DELETE'})
+  });
+  const j = await r.json();
+  if (j.ok) {
+    document.getElementById('empty-thrash-status').textContent = `✓ ${j.message}`;
+    document.getElementById('empty-thrash-status').style.color = '#4a8';
+    document.getElementById('thrash-count').textContent = '0';
+    document.getElementById('empty-thrash-btn').textContent = 'Empty Thrash (0)';
+    document.getElementById('empty-thrash-btn').disabled = true;
+    setTimeout(closeEmptyThrash, 2000);
+  } else {
+    document.getElementById('empty-thrash-status').textContent = 'Error: ' + (j.error || 'unknown');
+    document.getElementById('empty-thrash-status').style.color = '#c55';
+  }
+}
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeEmptyThrash(); });
+</script>
+""")
+
+# Retrain bar
+parts.append("""
+<div id="retrain-bar" style="margin:8px 0 16px;padding:10px 14px;background:#1a2a1a;border:1px solid #4a8;border-radius:6px">
+  <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+    <span style="font-size:13px">&#x1F9E0; <b>Retrain:</b> <span id="corr-count">…</span> corrections accumulated</span>
+    <button id="retrain-btn" onclick="doRetrain()" style="background:#27ae60;color:#fff;border:0;padding:6px 14px;border-radius:4px;cursor:pointer;font-weight:600;font-size:13px">Retrain &amp; Refresh</button>
+    <span id="retrain-status" style="font-size:12px;color:#888"></span>
+  </div>
+  <div id="retrain-progress-wrap" style="display:none;margin-top:10px">
+    <progress id="retrain-progress" max="100" value="0" style="width:100%;height:10px;accent-color:#27ae60"></progress>
+    <div id="retrain-log" style="font-size:11px;color:#666;margin-top:4px;font-family:monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"></div>
+  </div>
+</div>
+<script>
+(async () => {
+  try {
+    const r = await fetch('http://127.0.0.1:8765/api/corrections');
+    const j = await r.json();
+    const n = Object.keys(j).length;
+    document.getElementById('corr-count').textContent = n;
+    if (n < 50) {
+      document.getElementById('retrain-btn').title = 'Gather more corrections first (recommended: 200+)';
+      document.getElementById('retrain-btn').style.opacity = '0.65';
+    }
+  } catch(e) { document.getElementById('corr-count').textContent = '?'; }
+})();
+function doRetrain() {
+  const btn = document.getElementById('retrain-btn');
+  const st = document.getElementById('retrain-status');
+  const wrap = document.getElementById('retrain-progress-wrap');
+  const bar = document.getElementById('retrain-progress');
+  const logEl = document.getElementById('retrain-log');
+  btn.disabled = true;
+  btn.textContent = 'Retraining…';
+  st.textContent = 'Do not close this tab.';
+  st.style.color = '#888';
+  wrap.style.display = 'block';
+  bar.value = 2;
+  const phases = [
+    ['Loading corrections', 5],
+    ['Loading original', 10],
+    ['Loading CLIP', 15],
+    ['Building training', 22],
+    ['Training Logistic', 32],
+    ['Predicting all', 55],
+    ['Backup', 60],
+    ['Wrote', 62],
+    ['Regenerating', 65],
+    ['Writing index', 95],
+    ['Retrain complete', 98],
+  ];
+  const es = new EventSource('http://127.0.0.1:8765/api/retrain-stream?regen=1');
+  es.onmessage = function(e) {
+    const ev = JSON.parse(e.data);
+    if (ev.type === 'done') {
+      bar.value = 100;
+      st.textContent = '✓ Done — ' + ev.loaded + ' photos reloaded. Refreshing…';
+      st.style.color = '#4a8';
+      logEl.textContent = '';
+      es.close();
+      setTimeout(() => location.reload(), 1800);
+    } else if (ev.type === 'error') {
+      st.textContent = 'Error — check server log';
+      st.style.color = '#c55';
+      logEl.textContent = ev.msg || '';
+      es.close();
+      btn.disabled = false;
+      btn.textContent = 'Retrain & Refresh';
+    } else {
+      const clean = ev.msg.replace(/^\\d{{4}}-\\d{{2}}-\\d{{2}} \\d{{2}}:\\d{{2}}:\\d{{2}},\\d{{3}} \\w+ /, '');
+      logEl.textContent = clean;
+      for (const [kw, pct] of phases) {
+        if (ev.msg.includes(kw) && bar.value < pct) {{ bar.value = pct; break; }}
+      }
+    }
+  };
+  es.onerror = function() {
+    if (bar.value < 100) {
+      st.textContent = 'Connection lost — retrain may still be running in background.';
+      st.style.color = '#c55';
+      es.close();
+    }
+  };
+}
+</script>
+""")
+TABLE_HEADER = ('<tr style="background:#1a1a1a">'
+                '<th style="text-align:left;padding:6px 8px">Album</th>'
+                '<th style="text-align:right;padding:6px 8px">Count</th>'
+                '<th style="text-align:left;padding:6px 8px;color:#666;font-size:11px" '
+                'title="For Cluster-XX albums: top CLIP keyword labels — use these to decide what to rename the cluster">Suggestion</th></tr>')
+
+def album_row(album, uids, sugg=""):
     fn = safe_album_filename(album) + ".html"
+    return (f'<tr style="border-bottom:1px solid #222">'
+            f'<td style="padding:6px 8px"><a href="{fn}" style="color:#7ac">{html.escape(album)}</a></td>'
+            f'<td style="text-align:right;padding:6px 8px">{len(uids)}</td>'
+            f'<td style="padding:6px 8px;color:#666;font-size:11px">{html.escape(sugg)}</td></tr>')
+
+main_albums = [(a, u) for a, u in albums_sorted if not a.endswith('-unsure')]
+unsure_albums = [(a, u) for a, u in albums_sorted if a.endswith('-unsure')]
+
+# Main albums table
+parts.append(f'<p style="color:#666;font-size:11px;margin:0 0 6px">'
+             f'{len(main_albums)} main albums · {len(unsure_albums)} unsure albums</p>')
+parts.append('<table style="width:100%;border-collapse:collapse;margin-bottom:32px">')
+parts.append(TABLE_HEADER)
+for album, uids in main_albums:
     sugg = ""
     if album.startswith("Cluster-"):
         try:
@@ -404,11 +668,16 @@ for album, uids in albums_sorted:
                 sugg = ", ".join(s[0] for s in m["suggestions"][:3])
         except Exception:
             pass
-    parts.append(
-        f'<tr style="border-bottom:1px solid #333"><td style="padding:6px"><a href="{fn}" style="color:#7ac">{html.escape(album)}</a></td>'
-        f'<td style="text-align:right;padding:6px">{len(uids)}</td>'
-        f'<td style="padding:6px;color:#999;font-size:12px">{html.escape(sugg)}</td></tr>'
-    )
+    parts.append(album_row(album, uids, sugg))
+parts.append('</table>')
+
+# Unsure albums table
+parts.append('<h2 style="font-size:14px;color:#888;margin:0 0 4px;font-weight:600">Unsure Albums</h2>')
+parts.append('<p style="font-size:12px;color:#555;margin:0 0 8px">Photos assigned at 50–80% confidence. Review these to improve accuracy — use <b>Confirm</b> or reassign.</p>')
+parts.append('<table style="width:100%;border-collapse:collapse">')
+parts.append(TABLE_HEADER)
+for album, uids in unsure_albums:
+    parts.append(album_row(album, uids))
 parts.append('</table>')
 parts.append(HTML_TAIL)
 (REVIEW_DIR / "index.html").write_text("".join(parts))

@@ -14,6 +14,7 @@ Endpoints:
 import csv
 import datetime as dt
 import json
+import subprocess
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -80,6 +81,7 @@ uuid_to_idx = {u: i for i, u in enumerate(uuids_emb)}
 print(f"  {emb.shape} loaded", flush=True)
 
 _lock = threading.Lock()
+_retrain_running = False
 
 
 def current_album(uid: str) -> str:
@@ -90,20 +92,7 @@ def all_albums() -> list:
     s = set(assigned.values()) | set(corrections.values()) | set(empty_seeds)
     for mems in multi_memberships.values():
         s.update(mems)
-    # Sort: seeds first, clusters next, Unsortiert last
-    SEED = ["Pornografie", "Pornografie-unsure", "Nacktheit", "Nacktheit-unsure",
-            "Motorrad-Werkstatt", "Motorrad-Werkstatt-unsure",
-            "Aquarium", "Aquarium-unsure", "Garten", "Garten-unsure"]
-
-    def key(a):
-        if a in SEED:
-            return (0, SEED.index(a))
-        if a == "Unsortiert":
-            return (3, 0)
-        if a.startswith("Cluster-"):
-            return (1, a)
-        return (2, a)
-    return sorted(s, key=key)
+    return sorted(s, key=lambda a: a.lower())
 
 
 def find_similar(uid: str, n: int = 20) -> list:
@@ -120,6 +109,19 @@ def apply_correction(uid: str, album: str, source: str = "manual"):
         with CORRECTIONS.open("a", newline="") as f:
             csv.writer(f).writerow([uid, album, dt.datetime.utcnow().isoformat(), source])
         corrections[uid] = album
+
+
+def reload_state():
+    """Reload assigned dict from assignments.csv after a retrain."""
+    global assigned
+    new_assigned = {}
+    with ASSIGN.open() as f:
+        for r in csv.DictReader(f):
+            new_assigned[r["uuid"]] = r["album"]
+    with _lock:
+        assigned.clear()
+        assigned.update(new_assigned)
+    return len(new_assigned)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -183,6 +185,61 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"uuid": uid, "similar": [{"uuid": u, "score": s, "album": current_album(u)} for u, s in res]}); return
         if path == "/api/corrections":
             self._json(corrections); return
+        if path == "/api/thrash-count":
+            n = sum(1 for v in corrections.values() if v == "Thrash")
+            self._json({"count": n}); return
+
+        if path == "/api/retrain-stream":
+            global _retrain_running
+            if _retrain_running:
+                self.send_response(409)
+                self.send_header("Content-Type", "text/plain")
+                self._cors()
+                self.end_headers()
+                self.wfile.write(b"Retrain already in progress")
+                return
+            regen = query.get("regen", "1") != "0"
+            cmd = [sys.executable, str(ROOT / "06_retrain.py")]
+            if not regen:
+                cmd.append("--no-regen")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "keep-alive")
+            self._cors()
+            self.end_headers()
+            _retrain_running = True
+            try:
+                proc = subprocess.Popen(
+                    cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    text=True, bufsize=1
+                )
+                for line in proc.stdout:
+                    line = line.rstrip()
+                    if line:
+                        payload = json.dumps({"type": "log", "msg": line})
+                        self.wfile.write(f"data: {payload}\n\n".encode())
+                        self.wfile.flush()
+                proc.wait()
+                if proc.returncode == 0:
+                    n = reload_state()
+                    payload = json.dumps({"type": "done", "loaded": n})
+                else:
+                    payload = json.dumps({"type": "error", "msg": f"exit code {proc.returncode}"})
+                self.wfile.write(f"data: {payload}\n\n".encode())
+                self.wfile.flush()
+            except BrokenPipeError:
+                pass
+            except Exception as e:
+                try:
+                    payload = json.dumps({"type": "error", "msg": str(e)})
+                    self.wfile.write(f"data: {payload}\n\n".encode())
+                    self.wfile.flush()
+                except Exception:
+                    pass
+            finally:
+                _retrain_running = False
+            return
 
         # Images
         if path.startswith("/img/"):
@@ -229,12 +286,77 @@ class Handler(BaseHTTPRequestHandler):
                 if u in path_by_uuid:
                     apply_correction(u, album, src)
             self._json({"ok": True, "count": len(uids), "album": album}); return
+
+        if self.path == "/api/retrain":
+            body = self._read_body()
+            regen = body.get("regenerate", True)
+            cmd = [sys.executable, str(ROOT / "06_retrain.py")]
+            if not regen:
+                cmd.append("--no-regen")
+            rc = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+            if rc.returncode != 0:
+                self._json({"ok": False, "error": rc.stderr[-1000:]}, 500); return
+            n = reload_state()
+            lines = [l for l in rc.stdout.splitlines() if l.strip()]
+            self._json({"ok": True, "loaded": n, "log": lines[-30:]}); return
+
+        if self.path == "/api/empty-thrash":
+            body = self._read_body()
+            if body.get("confirm") != "DELETE":
+                self._json({"error": "confirm=DELETE required"}, 400); return
+            thrash_uids = [u for u, v in corrections.items() if v == "Thrash"]
+            if not thrash_uids:
+                self._json({"ok": True, "deleted": 0, "message": "Thrash is already empty"}); return
+            # Write helper script and call osxphotos venv python to delete
+            helper = ROOT / "_delete_helper.py"
+            helper.write_text(_DELETE_HELPER_SRC)
+            tmp = ROOT / "logs" / "_thrash_uuids.txt"
+            tmp.write_text("\n".join(thrash_uids))
+            osx_python = Path.home() / ".local" / "pipx" / "venvs" / "osxphotos" / "bin" / "python"
+            rc = subprocess.run(
+                [str(osx_python), str(helper), str(tmp)],
+                capture_output=True, text=True, timeout=120
+            )
+            if rc.returncode != 0:
+                self._json({"ok": False, "error": rc.stderr[:500]}); return
+            # Remove from in-memory corrections and mark as deleted
+            with _lock:
+                for u in thrash_uids:
+                    corrections.pop(u, None)
+            self._json({"ok": True, "deleted": len(thrash_uids), "message": rc.stdout.strip()}); return
+
         self.send_error(404)
 
     def log_message(self, fmt, *args):
         sys.stderr.write(f"{self.address_string()} {fmt % args}\n")
         sys.stderr.flush()
 
+
+_DELETE_HELPER_SRC = '''#!/usr/bin/env python3
+"""Move Photos.app photos by UUID to the Recently Deleted album (trash)."""
+import sys
+from pathlib import Path
+try:
+    import photoscript
+except ImportError:
+    print("ERROR: photoscript not installed. Run: pipx inject osxphotos photoscript")
+    sys.exit(2)
+
+uuid_file = Path(sys.argv[1])
+uuids = [u.strip() for u in uuid_file.read_text().splitlines() if u.strip()]
+lib = photoscript.PhotosLibrary()
+deleted = 0
+errors = 0
+for u in uuids:
+    try:
+        photo = photoscript.Photo(u)
+        lib.delete([photo])
+        deleted += 1
+    except Exception as e:
+        errors += 1
+        print(f"  skip {u}: {e}", file=sys.stderr)
+print(f"Moved {deleted}/{len(uuids)} to Recently Deleted (errors: {errors})")
+'''
 
 if __name__ == "__main__":
     print(f"Serving review on http://{BIND}:{PORT}/", flush=True)

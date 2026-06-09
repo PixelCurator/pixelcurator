@@ -19,6 +19,7 @@ Safety:
   - Only ADDS photos to (possibly new) target albums.
   - Skips rows where enabled != "1".
   - Photos already in the target album are silently kept (osxphotos no-op).
+  - "Thrash" is a local-only review marker — NEVER written to Photos.app.
 """
 import argparse
 import csv
@@ -30,6 +31,9 @@ from pathlib import Path
 
 ROOT = Path.home() / "photo-sort"
 ASSIGN_CSV = ROOT / "metadata" / "assignments.csv"
+
+# Albums that are local-only review markers — never written to Photos.app
+WRITE_SKIP = {"Thrash"}
 RENAMES_CSV = ROOT / "metadata" / "renames.csv"
 LOG_PATH = ROOT / "logs" / "05_write.log"
 
@@ -213,6 +217,9 @@ def main():
     log.info(f"Total unique photos to add: {len(set.union(*target_to_uids.values())) if target_to_uids else 0}")
 
     for target in sorted(target_to_uids.keys()):
+        if target in WRITE_SKIP:
+            log.info(f"  [SKIP] {target!r} is a local-only marker — not written to Photos.app")
+            continue
         osxphotos_add(target, sorted(target_to_uids[target]), write=args.write)
 
     log.info("Done.")
