@@ -114,6 +114,12 @@ def apply_correction(uid: str, album: str, source: str = "manual"):
         corrections[uid] = album
 
 
+def _safe_fn(name: str) -> str:
+    """Same logic as safe_album_filename in 04_contact_sheets.py."""
+    return (name.replace("/", "_").replace(" ", "_")
+            .replace("ä", "ae").replace("ö", "oe").replace("ü", "ue").replace("ß", "ss"))
+
+
 def reload_state():
     """Reload assigned dict from assignments.csv after a retrain."""
     global assigned
@@ -313,6 +319,49 @@ class Handler(BaseHTTPRequestHandler):
             n = reload_state()
             lines = [l for l in rc.stdout.splitlines() if l.strip()]
             self._json({"ok": True, "loaded": n, "log": lines[-30:]}); return
+
+        if self.path == "/api/rename-album":
+            body = self._read_body()
+            old_name = body.get("old_name", "").strip()
+            new_name = body.get("new_name", "").strip()
+            if not old_name or not new_name:
+                self._json({"error": "old_name and new_name required"}, 400); return
+            if old_name == new_name:
+                self._json({"ok": True, "renamed": 0}); return
+            # Build mapping: also rename the -unsure variant
+            name_map = {old_name: new_name}
+            if not old_name.endswith("-unsure"):
+                name_map[old_name + "-unsure"] = new_name + "-unsure"
+            # Rewrite assignments.csv
+            with ASSIGN.open() as f:
+                reader = csv.DictReader(f); fields = reader.fieldnames; rows = list(reader)
+            renamed = 0
+            for r in rows:
+                if r["album"] in name_map:
+                    r["album"] = name_map[r["album"]]; renamed += 1
+            with ASSIGN.open("w", newline="") as f:
+                w = csv.DictWriter(f, fieldnames=fields); w.writeheader(); w.writerows(rows)
+            # Rewrite corrections.csv
+            with CORRECTIONS.open() as f:
+                cr = csv.DictReader(f); cfields = cr.fieldnames; crows = list(cr)
+            for r in crows:
+                if r["new_album"] in name_map:
+                    r["new_album"] = name_map[r["new_album"]]
+            with CORRECTIONS.open("w", newline="") as f:
+                w = csv.DictWriter(f, fieldnames=cfields); w.writeheader(); w.writerows(crows)
+            # Update in-memory state
+            with _lock:
+                for uid in list(assigned):
+                    if assigned[uid] in name_map: assigned[uid] = name_map[assigned[uid]]
+                for uid in list(corrections):
+                    if corrections[uid] in name_map: corrections[uid] = name_map[corrections[uid]]
+            # Remove stale HTML files, regenerate all sheets
+            for old in name_map:
+                stale = REVIEW / (_safe_fn(old) + ".html")
+                if stale.exists(): stale.unlink()
+            subprocess.run([sys.executable, str(ROOT / "04_contact_sheets.py")],
+                           capture_output=True, timeout=120)
+            self._json({"ok": True, "renamed": renamed, "map": name_map}); return
 
         if self.path == "/api/empty-thrash":
             body = self._read_body()

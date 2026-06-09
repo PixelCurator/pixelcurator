@@ -648,54 +648,101 @@ function doRetrain() {
 TABLE_HEADER = ('<tr style="background:#1a1a1a">'
                 '<th style="text-align:left;padding:6px 8px">Album</th>'
                 '<th style="text-align:right;padding:6px 8px">Count</th>'
-                '<th style="text-align:left;padding:6px 8px;color:#666;font-size:11px" '
-                'title="For Cluster-XX albums: top CLIP keyword labels — use these to decide what to rename the cluster">Suggestion</th></tr>')
-
-def album_row(album, uids, sugg=""):
-    fn = safe_album_filename(album) + ".html"
-    return (f'<tr style="border-bottom:1px solid #222">'
-            f'<td style="padding:6px 8px"><a href="{fn}" style="color:#7ac">{html.escape(album)}</a></td>'
-            f'<td style="text-align:right;padding:6px 8px">{len(uids)}</td>'
-            f'<td style="padding:6px 8px;color:#666;font-size:11px">{html.escape(sugg)}</td></tr>')
+                '<th style="width:28px"></th></tr>')
 
 main_albums = [(a, u) for a, u in albums_sorted if not a.endswith('-unsure')]
 unsure_albums = [(a, u) for a, u in albums_sorted if a.endswith('-unsure')]
+unsure_by_main = {a[:-len('-unsure')]: (a, u) for a, u in unsure_albums}
 
-# Main albums table
+unsure_total = sum(len(u) for _, u in unsure_albums)
 parts.append(f'<p style="color:#666;font-size:11px;margin:0 0 6px">'
-             f'{len(main_albums)} main albums · {len(unsure_albums)} unsure albums</p>')
+             f'{len(main_albums)} albums · {len(unsure_albums)} with unsure photos ({unsure_total:,} total)</p>')
 parts.append('<table style="width:100%;border-collapse:collapse;margin-bottom:32px">')
 parts.append(TABLE_HEADER)
 for album, uids in main_albums:
-    sugg = ""
-    if album.startswith("Cluster-"):
-        try:
-            cid = int(album.split("-")[1])
-            m = cluster_meta.get(str(cid), {})
-            if m.get("suggestions"):
-                sugg = ", ".join(s[0] for s in m["suggestions"][:3])
-        except Exception:
-            pass
-    parts.append(album_row(album, uids, sugg))
-parts.append('</table>')
+    fn = safe_album_filename(album) + ".html"
+    row_id = f"ur-{safe_album_filename(album)}"
+    unsure_row_html = ""
 
-# Unsure albums — collapsible section
-unsure_total = sum(len(u) for _, u in unsure_albums)
-parts.append(
-    f'<details style="margin-top:16px">'
-    f'<summary>'
-    f'<b style="color:#aaa">Unsure Albums</b>'
-    f' <span style="color:#666;font-size:12px">— {len(unsure_albums)} albums · {unsure_total:,} photos at 50–80% confidence</span>'
-    f'</summary>'
-    f'<p style="font-size:12px;color:#555;margin:8px 0">Photos assigned at 50–80% confidence. '
-    f'Review these to improve accuracy — use <b>Confirm</b> or reassign.</p>'
-)
-parts.append('<table style="width:100%;border-collapse:collapse">')
-parts.append(TABLE_HEADER)
-for album, uids in unsure_albums:
-    parts.append(album_row(album, uids))
+    if album in unsure_by_main:
+        u_album, u_uids = unsure_by_main[album]
+        u_fn = safe_album_filename(u_album) + ".html"
+        toggle = (f'<button onclick="toggleUnsure(\'{row_id}\',this)" '
+                  f'title="{len(u_uids):,} unsure photos — click to expand" '
+                  f'style="background:none;border:none;color:#555;cursor:pointer;'
+                  f'padding:0 5px 0 0;font-size:11px;line-height:1;vertical-align:middle">▶</button>')
+        unsure_row_html = (
+            f'<tr id="{row_id}" style="display:none">'
+            f'<td style="padding:3px 8px 3px 24px;background:#161616">'
+            f'<a href="{u_fn}" style="color:#8ab;font-size:12px">↳ {html.escape(u_album)}</a></td>'
+            f'<td style="text-align:right;padding:3px 8px;background:#161616;'
+            f'font-size:12px;color:#666">{len(u_uids):,}</td>'
+            f'<td style="background:#161616"></td></tr>'
+        )
+    else:
+        toggle = '<span style="display:inline-block;width:20px"></span>'
+
+    esc = html.escape(album).replace("'", "\\'")
+    edit_btn = (f'<button onclick="startRename(\'{esc}\',this)" title="Rename album" '
+                f'style="background:none;border:none;color:#444;cursor:pointer;'
+                f'padding:2px;font-size:12px;line-height:1">✏️</button>')
+
+    parts.append(
+        f'<tr style="border-bottom:1px solid #222">'
+        f'<td style="padding:6px 8px">{toggle}'
+        f'<a href="{fn}" style="color:#7ac">{html.escape(album)}</a></td>'
+        f'<td style="text-align:right;padding:6px 8px">{len(uids):,}</td>'
+        f'<td style="width:28px;padding:2px 4px;text-align:center">{edit_btn}</td></tr>'
+    )
+    if unsure_row_html:
+        parts.append(unsure_row_html)
+
 parts.append('</table>')
-parts.append('</details>')
+parts.append("""
+<script>
+function toggleUnsure(id, btn) {
+  const row = document.getElementById(id);
+  const hidden = row.style.display === 'none';
+  row.style.display = hidden ? '' : 'none';
+  btn.textContent = hidden ? '▼' : '▶';
+  btn.style.color = hidden ? '#4a8' : '#555';
+}
+function startRename(albumName, btn) {
+  const td = btn.closest('tr').querySelector('td:first-child');
+  const link = td.querySelector('a');
+  if (td.querySelector('input')) return;
+  const input = document.createElement('input');
+  input.value = albumName;
+  input.style.cssText = 'background:#222;color:#eee;border:1px solid #4a8;padding:2px 6px;border-radius:3px;font-size:13px;width:180px;margin-left:2px';
+  input.onkeydown = (e) => {
+    if (e.key === 'Enter') doRename(albumName, input.value.trim(), input, btn, link);
+    if (e.key === 'Escape') { input.remove(); link.style.display=''; btn.style.display=''; }
+  };
+  link.style.display = 'none';
+  btn.style.display = 'none';
+  td.insertBefore(input, link);
+  input.focus(); input.select();
+}
+async function doRename(oldName, newName, input, btn, link) {
+  if (!newName || newName === oldName) {
+    input.remove(); link.style.display=''; btn.style.display=''; return;
+  }
+  input.disabled = true;
+  input.style.opacity = '0.5';
+  const r = await fetch('http://127.0.0.1:8765/api/rename-album', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({old_name: oldName, new_name: newName})
+  });
+  const j = await r.json();
+  if (j.ok) {
+    location.reload();
+  } else {
+    alert('Rename failed: ' + (j.error || 'unknown'));
+    input.disabled = false; input.style.opacity = '1';
+  }
+}
+</script>
+""")
 parts.append(HTML_TAIL)
 (REVIEW_DIR / "index.html").write_text("".join(parts))
 
