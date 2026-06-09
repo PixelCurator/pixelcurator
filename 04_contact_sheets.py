@@ -800,8 +800,11 @@ if inbox_rows:
     _ibox_ps = 48
     parts.append(f"""
 <style>
-  #inbox-grid .cell.inbox-selected {{ outline:3px solid #7ac; opacity:.9; }}
-  #inbox-grid .cell {{ cursor:pointer; }}
+  #inbox-grid .cell.inbox-selected {{ outline:3px solid #7ac; }}
+  .inbox-chk {{ position:absolute;top:4px;left:4px;width:18px;height:18px;background:rgba(0,0,0,0.55);border:2px solid #777;border-radius:3px;cursor:pointer;display:none;z-index:5;box-sizing:border-box }}
+  #inbox-grid .cell:hover .inbox-chk {{ display:block }}
+  #inbox-grid .cell.inbox-selected .inbox-chk {{ display:block;background:#7ac;border-color:#7ac }}
+  #inbox-grid .cell.inbox-selected .inbox-chk::after {{ content:'✓';color:#000;font-size:11px;font-weight:700;position:absolute;top:50%;left:50%;transform:translate(-50%,-50%) }}
 </style>
 <div id="inbox-section" style="margin:-1px 0 12px;padding:10px 16px 14px;background:#111d2a;border:1px solid #7ac;border-top:none;border-radius:0 0 6px 6px">
   <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;flex-wrap:wrap">
@@ -828,6 +831,7 @@ if inbox_rows:
         parts.append(
             f'<div class="cell" data-uuid="{_uid}" data-conf="0" style="display:none">'
             f'<img src="{_url}" loading="lazy">'
+            f'<div class="inbox-chk"></div>'
             f'<span class="conf" style="background:#e8a;color:#000">new</span>'
             f'<span class="info">{_fn} {_date} {html.escape(_uid[:8])}</span>'
             f'<button class="trash-btn" onclick="trashOne(\'{_uid}\',event)" title="Move to Thrash">🗑</button>'
@@ -958,14 +962,13 @@ async function inboxBatchTrash() {{
     if (bar) bar.style.display = tj.count === 0 ? 'none' : 'flex';
   }}
 }}
-// Click in inbox grid = toggle selection (not open modal)
+// Checkbox click = toggle selection; all other clicks open modal normally
 document.getElementById('inbox-grid').addEventListener('click', function(e) {{
-  if (e.target.closest('.trash-btn')) return;
-  const cell = e.target.closest('.cell[data-uuid]');
-  if (!cell) return;
-  e.stopPropagation();
-  cell.classList.toggle('inbox-selected');
-  _updateBatchBar();
+  if (e.target.closest('.inbox-chk')) {{
+    e.stopPropagation();
+    const cell = e.target.closest('.cell[data-uuid]');
+    if (cell) {{ cell.classList.toggle('inbox-selected'); _updateBatchBar(); }}
+  }}
 }});
 _renderInbox();
 </script>
