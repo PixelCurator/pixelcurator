@@ -191,6 +191,17 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/thrash-count":
             n = sum(1 for v in corrections.values() if v == "Thrash")
             self._json({"count": n}); return
+        if path == "/api/retrain-status":
+            total = len(corrections)
+            last_file = ROOT / "metadata" / "last_retrain.json"
+            if last_file.exists():
+                import json as _json
+                info = _json.loads(last_file.read_text())
+                used = info.get("corrections_count", 0)
+                ts = info.get("timestamp")
+            else:
+                used, ts = 0, None
+            self._json({"total": total, "new_since_retrain": max(0, total - used), "last_retrain": ts}); return
 
         if path == "/api/retrain-stream":
             global _retrain_running

@@ -555,7 +555,7 @@ document.addEventListener('keydown', e => { if (e.key === 'Escape') closeEmptyTh
 parts.append("""
 <div id="retrain-bar" style="margin:8px 0 16px;padding:10px 14px;background:#1a2a1a;border:1px solid #4a8;border-radius:6px">
   <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
-    <span style="font-size:13px">&#x1F9E0; <b>Retrain:</b> <span id="corr-count">…</span> corrections accumulated</span>
+    <span style="font-size:13px">&#x1F9E0; <b>Retrain:</b> <span id="corr-new">…</span> new corrections <span id="corr-total" style="color:#555;font-size:11px"></span></span>
     <button id="retrain-btn" onclick="doRetrain()" style="background:#27ae60;color:#fff;border:0;padding:6px 14px;border-radius:4px;cursor:pointer;font-weight:600;font-size:13px">Retrain &amp; Refresh</button>
     <span id="retrain-status" style="font-size:12px;color:#888"></span>
   </div>
@@ -567,15 +567,20 @@ parts.append("""
 <script>
 (async () => {
   try {
-    const r = await fetch('http://127.0.0.1:8765/api/corrections');
+    const r = await fetch('http://127.0.0.1:8765/api/retrain-status');
     const j = await r.json();
-    const n = Object.keys(j).length;
-    document.getElementById('corr-count').textContent = n;
-    if (n < 50) {
-      document.getElementById('retrain-btn').title = 'Gather more corrections first (recommended: 200+)';
-      document.getElementById('retrain-btn').style.opacity = '0.65';
+    document.getElementById('corr-new').textContent = j.new_since_retrain;
+    document.getElementById('corr-total').textContent = j.last_retrain
+      ? `(${j.total} total, last retrain ${j.last_retrain.slice(0,10)})`
+      : `(${j.total} total, no retrain yet)`;
+    const btn = document.getElementById('retrain-btn');
+    if (j.new_since_retrain < 50) {
+      btn.title = 'Recommended: collect 200+ new corrections before retraining';
+      btn.style.opacity = '0.55';
+    } else if (j.new_since_retrain >= 200) {
+      btn.style.boxShadow = '0 0 0 2px #27ae60';
     }
-  } catch(e) { document.getElementById('corr-count').textContent = '?'; }
+  } catch(e) { document.getElementById('corr-new').textContent = '?'; }
 })();
 function doRetrain() {
   const btn = document.getElementById('retrain-btn');

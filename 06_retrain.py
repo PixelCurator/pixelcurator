@@ -266,6 +266,18 @@ def main():
     if not args.dry_run and not args.no_regen:
         regenerate_sheets()
 
+    # Record retrain checkpoint so the UI can show "N new since last retrain"
+    if not args.dry_run:
+        import datetime as _dt
+        checkpoint = {
+            "timestamp": _dt.datetime.utcnow().isoformat(),
+            "corrections_count": len(corrections),
+        }
+        (ROOT / "metadata" / "last_retrain.json").write_text(
+            json.dumps(checkpoint, indent=2)
+        )
+        log.info(f"  Checkpoint saved ({len(corrections)} corrections used)")
+
     log.info("=== Retrain complete ===")
     return stats
 
