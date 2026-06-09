@@ -238,10 +238,14 @@ class Handler(BaseHTTPRequestHandler):
             if inbox.exists():
                 with inbox.open() as f:
                     for r in csv.DictReader(f):
-                        if r.get("has_local_derivative") == "True":
-                            total += 1
-                            if r.get("uuid", "") not in corrections:
-                                unsorted += 1
+                        if r.get("has_local_derivative") != "True":
+                            continue
+                        uid = r.get("uuid", "")
+                        if corrections.get(uid) == "Thrash":
+                            continue  # trashed inbox photos don't count — removed on empty-trash
+                        total += 1
+                        if uid not in corrections:
+                            unsorted += 1
             self._json({"count": unsorted, "total": total,
                         "sorted": total - unsorted}); return
 
