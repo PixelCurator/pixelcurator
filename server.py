@@ -696,6 +696,23 @@ class Handler(BaseHTTPRequestHandler):
                         w.writerow([u, "", ts, "emptied"])  # empty new_album = tombstone
                 for u in thrash_uids:
                     corrections.pop(u, None)
+                    path_by_uuid.pop(u, None)
+            # Remove trashed UUIDs from inbox.csv (they're deleted, shouldn't reappear)
+            inbox_path = ROOT / "metadata" / "inbox.csv"
+            if inbox_path.exists():
+                thrash_set = set(thrash_uids)
+                with inbox_path.open() as f:
+                    rdr = csv.DictReader(f)
+                    fields = rdr.fieldnames or []
+                    all_rows = list(rdr)
+                remaining = [r for r in all_rows if r.get("uuid") not in thrash_set]
+                with inbox_path.open("w", newline="") as f:
+                    w = csv.DictWriter(f, fieldnames=fields)
+                    w.writeheader()
+                    w.writerows(remaining)
+                if len(remaining) < len(all_rows):
+                    subprocess.run([sys.executable, str(ROOT / "04_contact_sheets.py")],
+                                   capture_output=True, timeout=120)
             self._json({"ok": True, "deleted": len(thrash_uids), "message": rc.stdout.strip()}); return
 
         self.send_error(404)
