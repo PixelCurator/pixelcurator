@@ -1,0 +1,64 @@
+# OpenSSF Scorecard — supply-chain & security-posture analysis.
+# https://github.com/ossf/scorecard-action
+#
+# PRIVATE-REPO NOTE: while this repo is private, `publish_results` MUST stay
+# false (the public OpenSSF API only accepts public repos) and the README
+# badge cannot render yet — it is kept commented in README.md. The SARIF is
+# uploaded as a build artifact instead of to code scanning, because the
+# Security-tab upload needs GitHub Advanced Security on private repos.
+#
+# WHEN THIS REPO GOES PUBLIC: set `publish_results: true` and uncomment both
+# the README badge and the "Upload to code-scanning" step below.
+name: OpenSSF Scorecard
+
+on:
+  # Re-run when branch protection rules change (a scored signal).
+  branch_protection_rule:
+  schedule:
+    - cron: '27 7 * * 1'  # weekly, Monday 07:27 UTC
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+# Least-privilege by default; the job widens only what it needs.
+permissions: read-all
+
+jobs:
+  analysis:
+    name: Scorecard analysis
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write  # upload SARIF to code scanning (public/GHAS only)
+      id-token: write         # OIDC for publish_results (public only)
+      contents: read
+      actions: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Run analysis
+        uses: ossf/scorecard-action@v2
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          # Keep false while private. Set true once the repo is public to
+          # publish the score to the OpenSSF API (required for the badge).
+          publish_results: false
+
+      # SARIF as an artifact works on private repos without GHAS.
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SARIF file
+          path: results.sarif
+          retention-days: 5
+
+      # PUBLIC / GHAS ONLY — surfaces findings in the Security tab. Uploading to
+      # code scanning on a PRIVATE repo requires GitHub Advanced Security, so
+      # this stays disabled until the repo is public (free) or GHAS is enabled.
+      # - name: Upload to code-scanning
+      #   uses: github/codeql-action/upload-sarif@v3
+      #   with:
+      #     sarif_file: results.sarif
