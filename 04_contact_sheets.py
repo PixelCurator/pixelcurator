@@ -12,13 +12,14 @@ import csv
 import html
 import json
 import logging
+import os
 import random
 import sys
 from collections import defaultdict
 from pathlib import Path
 from urllib.parse import quote
 
-ROOT = Path.home() / "photo-sort"
+ROOT = Path(os.environ.get("PIXEL_ROOT", str(Path.home() / "photo-sort")))
 INV_CSV = ROOT / "metadata" / "inventory.csv"
 ASSIGN_CSV = ROOT / "metadata" / "assignments.csv"
 CLUSTER_META = ROOT / "metadata" / "cluster_meta.json"
@@ -311,6 +312,7 @@ async function saveOne() {
   if (j.ok) {
     setStatus(`saved → ${album}`, '#4a8');
     markCellCorrected(activeUuid, album);
+    _refreshUndoBar();
     await advanceModal();
   } else setStatus('error: ' + (j.error || 'unknown'), '#c55');
 }
@@ -325,8 +327,22 @@ async function confirmOne() {
   const j = await r.json();
   if (j.ok) {
     markCellCorrected(activeUuid, album);
+    _refreshUndoBar();
     await advanceModal();
   } else setStatus('error: ' + (j.error || 'unknown'), '#c55');
+}
+
+// Update thrash bar count + visibility instantly (no-op if not on index)
+function _updateThrashBar(delta) {
+  const bar = document.getElementById('thrash-bar');
+  const countEl = document.getElementById('thrash-count');
+  if (!bar || !countEl) return;
+  const cur = parseInt(countEl.textContent, 10) || 0;
+  const next = Math.max(0, cur + delta);
+  countEl.textContent = next;
+  const btn = document.getElementById('empty-thrash-btn');
+  if (btn) btn.textContent = 'Empty Thrash (' + next + ')';
+  bar.style.display = next > 0 ? 'flex' : 'none';
 }
 
 // Trash a single uuid — callable from grid (event) or modal (no event)
@@ -337,7 +353,11 @@ async function trashOne(uuid, event) {
     body: JSON.stringify({uuid, new_album: 'Thrash', source: 'trash'})
   });
   const j = await r.json();
-  if (j.ok) markCellCorrected(uuid, 'Thrash', true);
+  if (j.ok) {
+    markCellCorrected(uuid, 'Thrash', true);
+    _updateThrashBar(+1);
+    _refreshUndoBar();
+  }
 }
 
 // Trash from modal then advance
@@ -439,13 +459,43 @@ document.addEventListener('click', e => {
   }
 });
 
-// Mark already-corrected cells on load
+// Refresh undo/redo bar from server state
+async function _refreshUndoBar() {
+  try {
+    const j = await (await fetch('http://127.0.0.1:8765/api/undo-status')).json();
+    const bar = document.getElementById('undo-bar');
+    if (!bar) return;
+    if (!j.can_undo && !j.can_redo) { bar.style.display = 'none'; return; }
+    bar.style.display = 'flex';
+    const ub = document.getElementById('undo-btn');
+    const rb = document.getElementById('redo-btn');
+    const ud = document.getElementById('undo-desc');
+    if (ub) ub.style.display = j.can_undo ? '' : 'none';
+    if (rb) rb.style.display = j.can_redo ? '' : 'none';
+    if (ud) ud.textContent = j.undo_desc || (j.redo_desc ? j.redo_desc : '');
+  } catch(e) {}
+}
+
+// Mark already-corrected cells on load; un-mark stale inbox cells not in current corrections
 (async () => {
   const r = await fetch('http://127.0.0.1:8765/api/corrections');
   const c = await r.json();
   for (const [uuid, album] of Object.entries(c)) {
     markCellCorrected(uuid, album, album === 'Thrash');
   }
+  // Remove stale 'corrected' class from inbox cells that are no longer corrected
+  if (typeof _iboxCells !== 'undefined') {
+    for (const cell of _iboxCells) {
+      const uuid = cell.dataset.uuid;
+      if (uuid && !(uuid in c) && cell.classList.contains('corrected')) {
+        cell.classList.remove('corrected', 'trashed', 'inbox-selected');
+        const moved = cell.querySelector('.moved');
+        if (moved) moved.remove();
+      }
+    }
+    if (typeof _renderInbox === 'function') _renderInbox();
+  }
+  _refreshUndoBar();
 })();
 </script>
 </body></html>
@@ -550,6 +600,25 @@ async function doEmptyThrash() {
   }
 }
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeEmptyThrash(); });
+async function restoreOne(uuid, event) {
+  if (event) event.stopPropagation();
+  const r = await fetch('http://127.0.0.1:8765/api/restore', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({uuid})
+  });
+  const j = await r.json();
+  if (j.ok) {
+    const cell = document.querySelector(`.cell[data-uuid="${uuid}"]`);
+    if (cell) { cell.style.transition = 'opacity 0.3s'; cell.style.opacity = '0.25'; cell.style.pointerEvents = 'none'; }
+    const countEl = document.getElementById('thrash-count');
+    if (countEl) {
+      const next = Math.max(0, (parseInt(countEl.textContent, 10) || 0) - 1);
+      countEl.textContent = next;
+      const btn = document.getElementById('empty-thrash-btn');
+      if (btn) { btn.textContent = '🗑 Empty Thrash (' + next + ')'; btn.disabled = next === 0; }
+    }
+  }
+}
 </script>
 """)
     else:
@@ -565,12 +634,21 @@ document.addEventListener('keydown', e => { if (e.key === 'Escape') closeEmptyTh
         fn = uid_to_filename.get(uid, "")[:20]
         date = uid_to_date.get(uid, "")[:10]
         url = img_url(uid)
+        if album == "Thrash":
+            action_btn = (
+                f'<button class="restore-btn" onclick="restoreOne(\'{uid}\',event)" '
+                f'title="Restore from Trash" '
+                f'style="position:absolute;bottom:4px;right:4px;background:#2a4a2a;color:#7c7;'
+                f'border:1px solid #4a8;padding:3px 8px;border-radius:3px;cursor:pointer;font-size:11px;font-weight:600">↩ Restore</button>'
+            )
+        else:
+            action_btn = f'<button class="trash-btn" onclick="trashOne(\'{uid}\',event)" title="Move to Thrash">🗑</button>'
         parts.append(
             f'<div class="cell" data-uuid="{uid}" data-conf="{conf:.4f}">'
             f'<img src="{url}" loading="lazy">'
             f'<span class="conf">{conf_label}</span>'
             f'<span class="info">{html.escape(fn)} {html.escape(date)} {html.escape(uid[:8])}</span>'
-            f'<button class="trash-btn" onclick="trashOne(\'{uid}\',event)" title="Move to Thrash">🗑</button>'
+            f'{action_btn}'
             f'</div>'
         )
     parts.append('</div>')
@@ -612,8 +690,12 @@ if inbox_rows:
         meta=f"{len(inbox_rows)} new photos not yet classified. Assign them manually or use Auto-classify.",
         nav='<a href="/">← Index</a> <span style="color:#888;font-size:12px">| New photos — assign manually or auto-classify from the index</span>',
     )]
-    inbox_parts.append('<div class="legend">These photos have not been classified yet. Click to assign an album.</div>')
-    inbox_parts.append('<div id="toggleBar"><span id="hiddenCount">0 corrected hidden</span> <button onclick="toggleCorrected()">Toggle visibility</button></div>')
+    inbox_parts.append('<div class="legend">All inbox photos — sorted ones show their assigned album. Click any photo to reassign.</div>')
+    # Show all photos incl. already-sorted: green border = assigned, red = trashed
+    inbox_parts.append('<style>'
+        '.cell.corrected{display:block!important;opacity:1;border-color:#4a8!important}'
+        '.cell.trashed{border-color:#c55!important}'
+        '</style>')
     inbox_parts.append('<div class="grid">')
     for r in inbox_rows:
         uid = r["uuid"]
@@ -677,8 +759,13 @@ parts.append("""
 async function doUndoRedo(action) {
   const r = await fetch('http://127.0.0.1:8765/api/' + action, {method:'POST'});
   const j = await r.json();
-  if (j.ok) location.reload();
-  else alert((action === 'undo' ? 'Undo' : 'Redo') + ' failed: ' + (j.error || 'unknown'));
+  if (j.ok) {
+    if ((j.reverted ?? 1) > 0) location.reload();
+    else _refreshUndoBar(); // nothing changed — just update bar state
+  } else {
+    _refreshUndoBar();
+    alert((action === 'undo' ? 'Undo' : 'Redo') + ' failed: ' + (j.error || 'unknown'));
+  }
 }
 </script>
 """)
@@ -695,29 +782,70 @@ parts.append("""
     <div id="retrain-log" style="font-size:11px;color:#666;margin-top:4px;font-family:monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"></div>
   </div>
 </div>
+<!-- Warning modal shown when retrain is clicked with too few corrections -->
+<div id="retrain-warn-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.82);z-index:300;align-items:center;justify-content:center">
+  <div style="background:#1a1a1a;border:1px solid #4a8;border-radius:8px;padding:28px 32px;max-width:460px;width:90%">
+    <h2 style="margin:0 0 14px;color:#4a8;font-size:16px" id="retrain-warn-title">⚠️ Retrain — few corrections</h2>
+    <p id="retrain-warn-msg" style="color:#ccc;font-size:13px;line-height:1.6;margin:0 0 10px"></p>
+    <p id="retrain-warn-detail" style="color:#888;font-size:12px;line-height:1.5;margin:0 0 22px"></p>
+    <div style="display:flex;gap:10px">
+      <button onclick="_doRetrainNow()"
+        style="background:#27ae60;color:#fff;border:0;padding:8px 18px;border-radius:4px;cursor:pointer;font-weight:600;font-size:13px">
+        Proceed anyway
+      </button>
+      <button onclick="document.getElementById('retrain-warn-modal').style.display='none'"
+        style="background:#333;color:#ccc;border:1px solid #555;padding:8px 16px;border-radius:4px;cursor:pointer;font-size:13px">
+        Cancel
+      </button>
+    </div>
+  </div>
+</div>
 <script>
+let _retrainNewCorr = 0;
 (async () => {
   try {
     const r = await fetch('http://127.0.0.1:8765/api/retrain-status');
     const j = await r.json();
+    _retrainNewCorr = j.new_since_retrain;
+    if (j.new_since_retrain === 0) {
+      document.getElementById('retrain-bar').style.display = 'none';
+      return;
+    }
     document.getElementById('corr-new').textContent = j.new_since_retrain;
     document.getElementById('corr-total').textContent = j.last_retrain
       ? `(${j.total} total, last retrain ${j.last_retrain.slice(0,10)})`
       : `(${j.total} total, no retrain yet)`;
     const btn = document.getElementById('retrain-btn');
     if (j.new_since_retrain < 50) {
-      btn.title = `Only ${j.new_since_retrain} new corrections — threshold for a meaningful retrain is 200. Keep sorting!`;
       btn.style.opacity = '0.45';
     } else if (j.new_since_retrain < 200) {
-      btn.title = `${j.new_since_retrain}/200 new corrections — retrain works now but improves significantly at 200+.`;
       btn.style.opacity = '0.75';
     } else {
-      btn.title = `${j.new_since_retrain} new corrections — good time to retrain!`;
       btn.style.boxShadow = '0 0 0 2px #27ae60';
     }
   } catch(e) { document.getElementById('corr-new').textContent = '?'; }
 })();
 function doRetrain() {
+  if (_retrainNewCorr < 200) {
+    const isVeryLow = _retrainNewCorr < 50;
+    document.getElementById('retrain-warn-title').textContent =
+      isVeryLow ? '⚠️ Too few corrections to retrain' : '⚠️ Retrain — below recommended threshold';
+    document.getElementById('retrain-warn-msg').textContent = isVeryLow
+      ? `You have only ${_retrainNewCorr} new corrections since the last retrain. `
+        + `The model needs at least 200 to learn meaningfully — at this point a retrain `
+        + `is unlikely to improve your album suggestions.`
+      : `You have ${_retrainNewCorr} of the recommended 200 corrections. `
+        + `The retrain will work, but accuracy improves significantly the more examples you provide.`;
+    document.getElementById('retrain-warn-detail').textContent = isVeryLow
+      ? `Recommendation: Keep sorting photos in your albums until you reach 50–200 corrections, then retrain.`
+      : `You can proceed now for a mid-point checkpoint, or keep sorting for better results.`;
+    document.getElementById('retrain-warn-modal').style.display = 'flex';
+    return;
+  }
+  _doRetrainNow();
+}
+function _doRetrainNow() {
+  document.getElementById('retrain-warn-modal').style.display = 'none';
   const btn = document.getElementById('retrain-btn');
   const st = document.getElementById('retrain-status');
   const wrap = document.getElementById('retrain-progress-wrap');
@@ -775,11 +903,14 @@ function doRetrain() {
     }
   };
 }
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') document.getElementById('retrain-warn-modal').style.display = 'none';
+});
 </script>
 """)
 parts.append(f"""
 <div id="inbox-bar" style="margin:6px 0 8px;padding:10px 14px;background:#1a1f2a;border:1px solid #7ac;border-radius:6px;display:flex;align-items:center;gap:14px;flex-wrap:wrap">
-  <span id="inbox-label" style="font-size:13px">📥 <b>Inbox:</b> <span id="inbox-count">{"⏳" if not inbox_rows else len(inbox_rows)}</span> new photos not yet classified</span>
+  <span id="inbox-label" style="font-size:13px">📥 <a href="/Inbox.html" style="color:inherit;text-decoration:none;border-bottom:1px dotted currentColor" title="View full inbox"><b>Inbox</b></a>: <span id="inbox-count">{"⏳" if not inbox_rows else len(inbox_rows)}</span> new photos not yet classified</span>
   <button id="inbox-scan-btn" onclick="runInboxPhase('detect')"
     style="background:#2a4a6a;color:#7ac;border:1px solid #7ac;padding:5px 12px;border-radius:4px;cursor:pointer;font-size:12px;font-weight:600">
     🔍 Scan for new
@@ -788,27 +919,39 @@ parts.append(f"""
     style="background:#27ae60;color:#fff;border:0;padding:5px 12px;border-radius:4px;cursor:pointer;font-size:12px;font-weight:600;{'opacity:0.45;pointer-events:none' if not inbox_rows else ''}">
     ⚡ Auto-classify {"(" + str(len(inbox_rows)) + " photos)" if inbox_rows else ""}
   </button>
-  <span id="inbox-status" style="font-size:12px;color:#888"></span>
+  <span id="inbox-status" style="font-size:12px;color:#888;flex:0 0 100%;margin-top:2px;display:none"></span>
+  <div id="inbox-scan-progress" style="display:none;flex:0 0 100%;margin-top:4px">
+    <style>
+      @keyframes _shimmer {{
+        0%   {{ left:-45% }}
+        100% {{ left:110% }}
+      }}
+      #_scantrack {{ position:relative;width:100%;height:8px;background:#1e3040;border-radius:4px;overflow:hidden }}
+      #_scanfill  {{ height:100%;width:0%;background:#7ac;border-radius:4px;transition:width .4s ease }}
+      #_scanshine {{ position:absolute;top:0;left:-45%;width:40%;height:100%;
+        background:linear-gradient(90deg,transparent,rgba(255,255,255,.35),transparent);
+        animation:_shimmer 1.1s ease-in-out infinite }}
+    </style>
+    <div id="_scantrack"><div id="_scanfill"></div><div id="_scanshine"></div></div>
+    <div id="inbox-scan-text" style="font-size:11px;color:#666;margin-top:4px;font-family:monospace"></div>
+  </div>
+  <div id="inbox-log-wrap" style="display:none;flex:0 0 100%;margin-top:2px;font-size:11px;font-family:monospace;color:#666;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"></div>
 </div>
-<div id="inbox-scan-progress" style="display:none;margin:0 0 6px;padding:8px 12px;background:#111;border-radius:4px">
-  <progress id="inbox-scan-bar" max="100" value="0" style="width:100%;height:8px;accent-color:#7ac"></progress>
-  <div id="inbox-scan-text" style="font-size:11px;color:#666;margin-top:3px;font-family:monospace"></div>
-</div>
-<div id="inbox-log-wrap" style="display:none;margin:0 0 8px;padding:8px 12px;background:#111;border-radius:4px;font-size:11px;font-family:monospace;color:#666;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"></div>
 <script>
 async function runInboxPhase(phase) {{
   const btn = document.getElementById(phase === 'detect' ? 'inbox-scan-btn' : 'inbox-process-btn');
   const st = document.getElementById('inbox-status');
   const logWrap = document.getElementById('inbox-log-wrap');
   const progressWrap = document.getElementById('inbox-scan-progress');
-  const progressBar = document.getElementById('inbox-scan-bar');
+  const scanFill = document.getElementById('_scanfill');
   const progressText = document.getElementById('inbox-scan-text');
-  btn.disabled = true;
+  btn.style.display = 'none';
   st.textContent = phase === 'detect' ? 'Scanning Photos.app…' : 'Embedding + classifying…';
   st.style.color = '#888';
+  st.style.display = '';
   if (phase === 'detect') {{
     progressWrap.style.display = 'block';
-    progressBar.value = 0; progressBar.max = 100;
+    if (scanFill) scanFill.style.width = '3%';  // tiny seed so shimmer is visible
     progressText.textContent = 'Starting scan…';
   }} else {{
     logWrap.style.display = 'block';
@@ -817,7 +960,7 @@ async function runInboxPhase(phase) {{
   es.onmessage = function(e) {{
     const ev = JSON.parse(e.data);
     if (ev.type === 'done') {{
-      if (phase === 'detect') {{ progressBar.value = progressBar.max; progressText.textContent = 'Scan complete!'; }}
+      if (phase === 'detect' && scanFill) {{ scanFill.style.width = '100%'; progressText.textContent = 'Scan complete!'; }}
       st.textContent = '✓ Done' + (ev.count !== undefined ? ' — ' + ev.count + ' new photos' : '') + '. Refreshing…';
       st.style.color = '#4a8';
       es.close();
@@ -826,11 +969,11 @@ async function runInboxPhase(phase) {{
       st.textContent = 'Error: ' + ev.msg;
       st.style.color = '#c55';
       es.close();
-      btn.disabled = false;
+      btn.style.display = '';
     }} else if (ev.type === 'progress') {{
       if (ev.total > 0) {{
-        progressBar.max = ev.total; progressBar.value = ev.current;
         const pct = Math.round(ev.current / ev.total * 100);
+        if (scanFill) scanFill.style.width = pct + '%';
         progressText.textContent = 'Scanning… ' + ev.current.toLocaleString() + ' / ' + ev.total.toLocaleString() + ' (' + pct + '%)';
         const mx = document.getElementById('inbox-meta-extra');
         if (mx) mx.textContent = ' · scanning ' + pct + '%…';
@@ -858,23 +1001,30 @@ async function runInboxPhase(phase) {{
       bar.style.borderColor = '#2a2a2a';
       bar.style.background = '#141414';
       const lbl = document.getElementById('inbox-label');
-      if (lbl) lbl.innerHTML = '<span style="color:#555;font-size:12px">📥 Inbox: no new photos</span>';
+      if (lbl) lbl.innerHTML = '<span style="color:#555;font-size:12px">📥 Inbox: no new photos</span>';  // no link — Inbox.html may not exist
       document.getElementById('inbox-process-btn').style.display = 'none';
       return;
     }}
-    document.getElementById('inbox-count').textContent = j.count;
-    const mx = document.getElementById('inbox-meta-extra');
-    if (mx) {{
-      if (j.count > 0) mx.textContent = ' · ' + j.count + ' unsorted in Inbox' + (j.sorted > 0 ? ' · ✓ ' + j.sorted + ' sorted' : '');
-      else if (j.total > 0) mx.textContent = ' · ✓ Inbox all sorted — click ⚡ to commit';
-    }}
     const pb = document.getElementById('inbox-process-btn');
-    if (j.total > 0) {{
+    if (j.count === 0) {{
+      // All manually sorted — green bar, Commit button
+      document.getElementById('inbox-count').textContent = '0';
+      const bar = document.getElementById('inbox-bar');
+      bar.style.borderColor = '#4a8'; bar.style.background = '#142014';
+      const lbl = document.getElementById('inbox-label');
+      if (lbl) lbl.innerHTML = '<span style="color:#4a8;font-size:13px">📥 <a href="/Inbox.html" style="color:inherit;text-decoration:none;border-bottom:1px dotted currentColor" title="View full inbox"><b>Inbox</b></a>: ✓ ' + j.sorted + ' sorted — click ⚡ to commit</span>';
       pb.style.opacity = '1'; pb.style.pointerEvents = '';
-      pb.textContent = '⚡ ' + (j.sorted > 0 && j.count === 0 ? 'Commit to albums (' + j.total + ')' : 'Auto-classify (' + j.total + ' photos)');
-      pb.title = j.sorted > 0
-        ? 'Processes all ' + j.total + ' inbox photos. Manually sorted photos keep your album assignment. The ' + j.count + ' remaining get ML classification.'
-        : 'Embed + classify all ' + j.total + ' inbox photos with CLIP ML model.';
+      pb.textContent = '⚡ Commit (' + j.sorted + ')';
+      pb.title = 'Commit ' + j.sorted + ' manually sorted photo(s) to their albums.';
+    }} else {{
+      // Unsorted photos still exist
+      document.getElementById('inbox-count').textContent = j.count;
+      const mx = document.getElementById('inbox-meta-extra');
+      if (mx) mx.textContent = ' · ' + j.count + ' unsorted' + (j.sorted > 0 ? ' · ✓ ' + j.sorted + ' sorted' : '');
+      pb.style.opacity = '1'; pb.style.pointerEvents = '';
+      pb.textContent = '⚡ Auto-classify (' + j.count + ' unsorted)';
+      pb.title = 'Embed + classify ' + j.count + ' unsorted photo(s) with CLIP.'
+        + (j.sorted > 0 ? ' ' + j.sorted + ' manually sorted keep their album.' : '');
     }}
   }} catch(e) {{}}
 }})();
@@ -913,8 +1063,10 @@ if inbox_rows:
         _fn = html.escape(_r.get("original_filename", "")[:20])
         _date = html.escape(_r.get("date", "")[:10])
         _url = f"http://127.0.0.1:8765/img/{_uid}"
+        # Already corrected (e.g. Thrash) → add class so _renderInbox() skips it
+        _cls = "cell corrected" if _uid in _corr else "cell"
         parts.append(
-            f'<div class="cell" data-uuid="{_uid}" data-conf="0" style="display:none">'
+            f'<div class="{_cls}" data-uuid="{_uid}" data-conf="0" style="display:none">'
             f'<img src="{_url}" loading="lazy">'
             f'<div class="inbox-chk"></div>'
             f'<span class="conf" style="background:#e8a;color:#000">new</span>'
@@ -937,19 +1089,44 @@ const _iboxCells = [...document.querySelectorAll('#inbox-grid .cell')];
 function _renderInbox() {{
   const uncorrected = _iboxCells.filter(c => !c.classList.contains('corrected'));
   const total = _iboxCells.length;
-  const sortedN = total - uncorrected.length;
+  // Trashed photos are corrected but don't need a "commit" — only album-sorted ones do
+  const sortedN = _iboxCells.filter(c =>
+    c.classList.contains('corrected') && !c.classList.contains('trashed')
+  ).length;
   const section = document.getElementById('inbox-section');
 
   if (uncorrected.length === 0) {{
     if (section) section.style.display = 'none';
     const countEl = document.getElementById('inbox-count');
     if (countEl) countEl.textContent = '0';
+    const bar = document.getElementById('inbox-bar');
+    const lbl = document.getElementById('inbox-label');
+    const pb = document.getElementById('inbox-process-btn');
     const mx = document.getElementById('inbox-meta-extra');
-    if (mx) mx.textContent = total > 0 ? ' · ✓ Inbox all sorted — click ⚡ to commit' : '';
+    if (sortedN > 0) {{
+      // Some manually sorted → green "commit" state
+      if (bar) {{ bar.style.borderColor = '#4a8'; bar.style.background = '#142014'; }}
+      if (lbl) lbl.innerHTML = '<span style="color:#4a8;font-size:13px">📥 <a href="/Inbox.html" style="color:inherit;text-decoration:none;border-bottom:1px dotted currentColor" title="View full inbox"><b>Inbox</b></a>: ✓ ' + sortedN + ' sorted — click ⚡ to commit</span>';
+      if (pb) {{ pb.style.opacity = '1'; pb.style.pointerEvents = ''; pb.style.display = ''; pb.textContent = '⚡ Commit (' + sortedN + ')'; }}
+      if (mx) mx.textContent = ' · ✓ ' + sortedN + ' sorted — click ⚡ to commit';
+    }} else {{
+      // All trashed, nothing to commit → muted bar
+      if (bar) {{ bar.style.borderColor = '#2a2a2a'; bar.style.background = '#141414'; }}
+      if (lbl) lbl.innerHTML = '<span style="color:#555;font-size:12px">📥 Inbox: no new photos</span>';
+      if (pb) pb.style.display = 'none';
+      if (mx) mx.textContent = '';
+    }}
     return;
   }}
 
   if (section) section.style.display = '';
+  // Reset bar to default active state (clear any stale "all sorted" green styling)
+  const _activeBar = document.getElementById('inbox-bar');
+  if (_activeBar) {{ _activeBar.style.borderColor = '#7ac'; _activeBar.style.background = '#1a1f2a'; }}
+  const _activeLbl = document.getElementById('inbox-label');
+  if (_activeLbl && _activeLbl.innerHTML.includes('✓')) {{
+    _activeLbl.innerHTML = '📥 <a href="/Inbox.html" style="color:inherit;text-decoration:none;border-bottom:1px dotted currentColor" title="View full inbox"><b>Inbox</b></a>: <span id="inbox-count">' + uncorrected.length + '</span> new photos not yet classified';
+  }}
   const totalPages = Math.max(1, Math.ceil(uncorrected.length / {_ibox_ps}));
   if (_iboxPage >= totalPages) _iboxPage = Math.max(0, totalPages - 1);
   _iboxCells.forEach(c => {{ c.style.display = 'none'; }});
@@ -967,6 +1144,11 @@ function _renderInbox() {{
   if (countEl) countEl.textContent = uncorrected.length;
   const mx = document.getElementById('inbox-meta-extra');
   if (mx) mx.textContent = ' · ' + uncorrected.length + ' unsorted in Inbox' + sortedNote;
+  // Keep process button count in sync
+  const pb = document.getElementById('inbox-process-btn');
+  if (pb && pb.style.display !== 'none') {{
+    pb.textContent = '⚡ Auto-classify (' + uncorrected.length + ' unsorted)';
+  }}
 }}
 function inboxPrevPage() {{ if (_iboxPage > 0) {{ _iboxPage--; _renderInbox(); }} }}
 function inboxNextPage() {{
@@ -1055,7 +1237,7 @@ document.getElementById('inbox-grid').addEventListener('click', function(e) {{
     if (cell) {{ cell.classList.toggle('inbox-selected'); _updateBatchBar(); }}
   }}
 }});
-_renderInbox();
+// _renderInbox() is called by the corrections loader after stale classes are cleaned up
 </script>
 """)
 # undo bar inserted above (before inbox bar)
@@ -1120,7 +1302,7 @@ async function doEmptyThrash() {
     document.getElementById('thrash-count').textContent = '0';
     document.getElementById('empty-thrash-btn').textContent = 'Empty Thrash (0)';
     document.getElementById('empty-thrash-btn').disabled = true;
-    setTimeout(() => { closeEmptyThrash(); document.getElementById('thrash-bar').style.display = 'none'; }, 2000);
+    setTimeout(() => { closeEmptyThrash(); document.getElementById('thrash-bar').style.display = 'none'; _refreshUndoBar(); }, 2000);
   } else {
     document.getElementById('empty-thrash-status').textContent = 'Error: ' + (j.error || 'unknown');
     document.getElementById('empty-thrash-status').style.color = '#c55';

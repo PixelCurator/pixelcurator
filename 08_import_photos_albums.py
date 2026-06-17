@@ -20,11 +20,12 @@ import csv
 import datetime as dt
 import json
 import logging
+import os
 import subprocess
 import sys
 from pathlib import Path
 
-ROOT = Path.home() / "photo-sort"
+ROOT = Path(os.environ.get("PIXEL_ROOT", str(Path.home() / "photo-sort")))
 ASSIGN_CSV = ROOT / "metadata" / "assignments.csv"
 CORRECTIONS_CSV = ROOT / "metadata" / "corrections.csv"
 OSX_PYTHON = Path.home() / ".local" / "pipx" / "venvs" / "osxphotos" / "bin" / "python"
@@ -43,6 +44,12 @@ SYSTEM_ALBUMS = {
     "Videos", "Selfies", "Portrait", "Live Photos", "Slow-Mo", "Time-lapse",
     "Bursts", "Screenshots", "Screen Recordings", "Imports", "Animated", "Hidden",
     "RAW+JPEG", "Long Exposure", "Loop", "Bounce", "Slo-mo",
+}
+
+# Photos.app album name → canonical album name in our system.
+# Use this to merge renamed/rebranded albums into an existing one.
+ALBUM_ALIASES: dict[str, str] = {
+    "𝕏": "Twitter",   # rebranded from Twitter
 }
 
 # ── dump helper (runs in osxphotos venv) ──────────────────────────────────────
@@ -181,19 +188,28 @@ def run_import(dump: dict, dry_run: bool, skip_new: bool) -> None:
             stats["skipped_manual"] += 1
             continue
 
-        # Find first matching album
+        # Find first matching album (direct match or alias)
         target: str | None = None
         is_new = False
         for pa_name in pa_albums:
+            # 1. Direct case-insensitive match
             canonical = our_lower.get(pa_name.lower())
             if canonical:
                 target = canonical
                 break
+            # 2. Alias match (e.g. 𝕏 → Twitter)
+            alias_target = ALBUM_ALIASES.get(pa_name)
+            if alias_target:
+                canonical = our_lower.get(alias_target.lower())
+                if canonical:
+                    target = canonical
+                    break
         if target is None and not skip_new:
             for pa_name in pa_albums:
                 if pa_name not in SYSTEM_ALBUMS:
-                    target = pa_name
-                    is_new = True
+                    # Apply alias even for new-album creation
+                    target = ALBUM_ALIASES.get(pa_name, pa_name)
+                    is_new = target not in our_main
                     break
 
         if target is None:

@@ -18,6 +18,7 @@ import argparse
 import csv
 import json
 import logging
+import os
 import subprocess
 import sys
 import time
@@ -25,7 +26,7 @@ from pathlib import Path
 
 import numpy as np
 
-ROOT = Path.home() / "photo-sort"
+ROOT = Path(os.environ.get("PIXEL_ROOT", str(Path.home() / "photo-sort")))
 INV_CSV = ROOT / "metadata" / "inventory.csv"
 INBOX_CSV = ROOT / "metadata" / "inbox.csv"
 ASSIGN_CSV = ROOT / "metadata" / "assignments.csv"
@@ -111,10 +112,16 @@ def run_detect():
     count = 0
     for line in proc.stdout:
         line = line.rstrip()
-        if line:
+        if not line:
+            continue
+        # Pass RESULT: and PROGRESS: through raw so server.py can parse them.
+        # Other lines get logged with timestamp prefix.
+        if line.startswith("RESULT:") or line.startswith("PROGRESS:"):
+            print(line, flush=True)
+        else:
             log.info(f"  {line}")
-            if line.startswith("RESULT:"):
-                count = int(line.split(":")[1])
+        if line.startswith("RESULT:"):
+            count = int(line.split(":")[1])
     proc.wait()
     if proc.returncode != 0:
         log.error(f"Detection helper failed (exit {proc.returncode})")
@@ -125,7 +132,7 @@ def run_detect():
 
 # ── process (embed + classify) ────────────────────────────────────────────────
 
-def run_process():
+def run_process(regen: bool = True):
     log.info("=== Phase 2: Process inbox photos ===")
 
     if not INBOX_CSV.exists():
@@ -146,13 +153,17 @@ def run_process():
                 else:
                     manual_album.pop(r["uuid"], None)
 
-    # Split: manually sorted keep their album; rest go through ML
-    manual_rows = [r for r in all_with_path if r["uuid"] in manual_album]
+    # Split: manually sorted → commit; Thrash → skip (wait for Empty Trash); rest → ML
+    manual_rows = [r for r in all_with_path
+                   if r["uuid"] in manual_album and manual_album[r["uuid"]] not in SKIP_ALBUMS]
+    thrash_rows = [r for r in all_with_path
+                   if manual_album.get(r["uuid"]) in SKIP_ALBUMS]
     todo = [r for r in all_with_path if r["uuid"] not in manual_album]
     log.info(f"  {len(manual_rows)} manually sorted (keeping user assignment)")
+    log.info(f"  {len(thrash_rows)} trashed (skipped — use Empty Trash to delete)")
     log.info(f"  {len(todo)} photos to embed + classify with ML")
-    if not all_with_path:
-        log.info("  Nothing to do.")
+    if not manual_rows and not todo:
+        log.info("  Nothing to commit.")
         return
 
     # Load CLIP model + embed (only for ML photos; manual ones skip this)
@@ -325,13 +336,24 @@ def run_process():
 
     log.info(f"  Appended {added} photos to assignments.csv")
 
-    # Clear inbox.csv
-    INBOX_CSV.write_text("uuid,original_filename,date,derivative_path,has_local_derivative\n")
-    log.info("  inbox.csv cleared")
+    # Clear inbox.csv — keep Thrash-corrected rows (they wait for Empty Trash)
+    thrash_uuids = {r["uuid"] for r in thrash_rows}
+    if thrash_uuids:
+        remaining = [r for r in inbox_rows if r["uuid"] in thrash_uuids]
+        with INBOX_CSV.open("w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=["uuid","original_filename","date",
+                                               "derivative_path","has_local_derivative"])
+            w.writeheader()
+            w.writerows(remaining)
+        log.info(f"  inbox.csv: kept {len(remaining)} trashed photo(s), cleared the rest")
+    else:
+        INBOX_CSV.write_text("uuid,original_filename,date,derivative_path,has_local_derivative\n")
+        log.info("  inbox.csv cleared")
 
-    # Regenerate contact sheets
-    log.info("  Regenerating contact sheets…")
-    subprocess.run([sys.executable, str(ROOT / "04_contact_sheets.py")], check=True)
+    # Regenerate contact sheets (skip in test mode via --no-regen)
+    if regen:
+        log.info("  Regenerating contact sheets…")
+        subprocess.run([sys.executable, str(ROOT / "04_contact_sheets.py")], check=True)
     log.info("=== Process complete ===")
 
 
@@ -340,15 +362,17 @@ def main():
     ap.add_argument("--detect", action="store_true")
     ap.add_argument("--process", action="store_true")
     ap.add_argument("--all", action="store_true")
+    ap.add_argument("--no-regen", action="store_true",
+                    help="Skip contact-sheet regeneration after --process (for tests)")
     args = ap.parse_args()
 
     if args.all or (not args.detect and not args.process):
         run_detect()
-        run_process()
+        run_process(regen=not args.no_regen)
     elif args.detect:
         run_detect()
     elif args.process:
-        run_process()
+        run_process(regen=not args.no_regen)
 
 
 if __name__ == "__main__":

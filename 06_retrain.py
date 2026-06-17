@@ -25,6 +25,7 @@ import argparse
 import csv
 import json
 import logging
+import os
 import subprocess
 import sys
 from collections import Counter
@@ -32,7 +33,7 @@ from pathlib import Path
 
 import numpy as np
 
-ROOT = Path.home() / "photo-sort"
+ROOT = Path(os.environ.get("PIXEL_ROOT", str(Path.home() / "photo-sort")))
 ASSIGN_CSV = ROOT / "metadata" / "assignments.csv"
 CORRECTIONS_CSV = ROOT / "metadata" / "corrections.csv"
 EMB_NPY = ROOT / "embeddings" / "clip_vitb32.npy"
@@ -67,7 +68,7 @@ def load_corrections() -> dict[str, str]:
         return result
     with CORRECTIONS_CSV.open() as f:
         for r in csv.DictReader(f):
-            if r["new_album"] not in SKIP_ALBUMS:
+            if r["new_album"] and r["new_album"] not in SKIP_ALBUMS:
                 result[r["uuid"]] = r["new_album"]
     return result
 
