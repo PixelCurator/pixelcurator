@@ -1,5 +1,11 @@
 # PixelCurator
 
+<!-- OpenSSF Scorecard badge — the api.scorecard.dev badge only resolves for
+     PUBLIC repos. Uncomment this once the repo is made public (and flip
+     publish_results to true in .github/workflows/scorecard.yml):
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/PixelCurator/pixelcurator/badge)](https://scorecard.dev/viewer/?uri=github.com/PixelCurator/pixelcurator)
+-->
+
 On-device AI photo library organizer for macOS Photos.app. Classifies tens of thousands of photos into user-defined albums using CLIP + NudeNet + Apple's face recognition, all running locally — no cloud uploads.
 
 ## Status
