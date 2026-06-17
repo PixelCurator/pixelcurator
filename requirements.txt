@@ -6,7 +6,7 @@ Pillow>=12
 numpy>=2
 
 # NSFW detection
-nudenet>=3.4
+nudenet>=3.4.2
 onnxruntime>=1.26
 
 # Clustering / retraining
