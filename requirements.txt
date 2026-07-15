@@ -1,6 +1,6 @@
 # Core ML
 torch>=2.12
-torchvision>=0.27
+torchvision>=0.28.0
 open_clip_torch>=3.3
 Pillow>=12.2.0
 numpy>=2.4.6
