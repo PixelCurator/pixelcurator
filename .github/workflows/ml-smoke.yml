@@ -1,0 +1,96 @@
+# Exercises the real ML inference path (CLIP via open_clip/torch/torchvision,
+# NSFW detection via nudenet/onnxruntime) with the exact pinned wheels in
+# requirements.txt. See issue #28.
+#
+# tests.yml deliberately never imports torch/torchvision/numpy/onnxruntime --
+# its own header comment says so. That means a Dependabot bump to any of
+# those (or Pillow) could merge on green CI even if it silently broke the
+# real embedding/NSFW-detection pipeline: an ABI mismatch, the resolver
+# picking a torch/torchvision pair that violates the hard pin
+# (torchvision==0.28.0 requires torch==2.13.0 exactly), or a numpy major bump
+# breaking a compiled extension. The only thing that ever caught this was a
+# human manually building a venv and running real inference by hand while
+# closing out PRs #20/#21/#22/#23/#27 -- not a control. This job codifies
+# that manual check: tests/test_ml_smoke.py runs one real inference call
+# through each of the four places most likely to break silently on a
+# dependency bump (CLIP zero-shot classification against a known-correct
+# answer, a torch<->numpy roundtrip, torchvision.ops.nms, and
+# NudeDetector().detect() through 02_nsfw.py's own, unmodified, production
+# import path).
+#
+# Trigger: NOT every push/PR. Installing the full ML stack + downloading the
+# CLIP ViT-B-32 weights (~350MB, cached below) costs real wall-clock time on
+# every run even when cached, which is wasted cost on a PR that only touches
+# e.g. a review/*.html template or the README. The actual failure mode this
+# guards against is a *dependency bump*, so the job runs when the dependency
+# manifest or the ML source files themselves change, plus a weekly schedule
+# (catches a break introduced by an upstream wheel republish under an
+# existing pin) and workflow_dispatch (manual/on-demand). This narrows the
+# trigger deliberately -- see the app repo's pr-fallback-ci.yml for the
+# sibling quota-aware pattern of only paying a cost when the thing being
+# protected against actually changed.
+name: ML smoke test
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'requirements.txt'
+      - '01_embed.py'
+      - '02_nsfw.py'
+      - '03_classify_cluster.py'
+      - 'tests/test_ml_smoke.py'
+      - '.github/workflows/ml-smoke.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'requirements.txt'
+      - '01_embed.py'
+      - '02_nsfw.py'
+      - '03_classify_cluster.py'
+      - 'tests/test_ml_smoke.py'
+      - '.github/workflows/ml-smoke.yml'
+  schedule:
+    - cron: '41 4 * * 1'  # weekly, Monday 04:41 UTC (offset from scorecard.yml's Monday 07:27 UTC)
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ml-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ml-smoke:
+    name: ML pipeline smoke test (torch/torchvision/numpy/onnxruntime)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      # CLIP ViT-B-32 "openai" weights (~350MB) land in ~/.cache/huggingface
+      # via open_clip's HF Hub download path. NudeNet's ONNX weights ship
+      # inside the nudenet wheel itself (no separate download), so they're
+      # already covered by the pip cache above.
+      - name: Cache CLIP model weights
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/huggingface
+          key: ml-smoke-clip-vitb32-openai-${{ hashFiles('requirements.txt') }}
+
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip pytest -r requirements.txt
+
+      - name: Run ML smoke tests
+        run: python -m pytest tests/test_ml_smoke.py -v
