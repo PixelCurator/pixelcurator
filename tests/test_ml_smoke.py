@@ -78,7 +78,7 @@ def test_clip_zero_shot_classification_is_correct():
         probs = similarity.softmax(dim=-1)
 
     top1 = probs.argmax(dim=-1).tolist()
-    assert top1 == [1, 0], (  # DELIBERATELY WRONG -- proving the gate catches this; reverted next commit
+    assert top1 == [0, 1], (
         f"expected red image -> 'red' prompt (idx 0) and blue image -> "
         f"'blue' prompt (idx 1), got top-1 indices {top1} "
         f"(probs={probs.tolist()})"
