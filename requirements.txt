@@ -7,7 +7,7 @@ numpy>=2.5.1
 
 # NSFW detection
 nudenet>=3.4.2
-onnxruntime>=1.27.0
+onnxruntime>=1.28.0
 
 # Clustering / retraining
 scikit-learn>=1.9
