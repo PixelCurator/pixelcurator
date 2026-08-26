@@ -2,20 +2,38 @@
 
 Tests for build_training_set, MIN_CORR threshold, and weak-label filtering.
 Pure Python — no server, no subprocess.
+
+These tests import the REAL production module. An earlier version of this
+file re-implemented build_training_set() locally "for isolated unit
+testing" and tested the replica -- setting MIN_CORR = 0 in 06_retrain.py
+left all 8 tests green (verified by mutation). 06_retrain.py is not a
+valid module identifier (leading digit), so it is loaded via importlib
+from its file path instead of a plain import.
 """
-import csv
-import json
-import os
-import sys
-from collections import Counter
+import importlib.util
 from pathlib import Path
 
 import numpy as np
 import pytest
 
-# Allow importing 06_retrain from the repo root
 REPO_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO_ROOT))
+
+_spec = importlib.util.spec_from_file_location(
+    "retrain_06", REPO_ROOT / "06_retrain.py"
+)
+retrain = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(retrain)
+
+build_training_set = retrain.build_training_set
+MIN_CORR = retrain.MIN_CORR
+
+
+def test_production_constants_are_what_the_suite_assumes():
+    """The scenarios below hardcode 2-vs-3 correction counts and 0.79/0.80
+    confidence edges; make drift in the production constants loud."""
+    assert retrain.MIN_CORR == 3
+    assert retrain.WEAK_THRESHOLD == 0.80
+    assert retrain.SKIP_ALBUMS == {"Thrash", "_test_"}
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -25,43 +43,6 @@ def make_embeddings(n: int, dim: int = 16, seed: int = 0) -> np.ndarray:
     e = rng.standard_normal((n, dim)).astype(np.float32)
     e /= np.linalg.norm(e, axis=1, keepdims=True)
     return e
-
-
-SKIP_ALBUMS = {"Thrash", "_test_"}
-MIN_CORR = 3
-
-
-def build_training_set(corrections, assigned, emb, uuid_to_idx,
-                       weak_threshold=0.80):
-    """Replicate 06_retrain.build_training_set() for isolated unit testing."""
-    corr_counts = Counter(corrections.values())
-    valid_corr_albums = {a for a, n in corr_counts.items() if n >= MIN_CORR}
-
-    X, y, weights = [], [], []
-
-    for uid, album in corrections.items():
-        if album not in valid_corr_albums:
-            continue
-        if uid not in uuid_to_idx:
-            continue
-        X.append(emb[uuid_to_idx[uid]])
-        y.append(album)
-        weights.append(2.0)
-
-    for uid, (album, conf, src) in assigned.items():
-        if uid in corrections:
-            continue
-        if conf < weak_threshold:
-            continue
-        if album.endswith("-unsure") or album in SKIP_ALBUMS:
-            continue
-        if uid not in uuid_to_idx:
-            continue
-        X.append(emb[uuid_to_idx[uid]])
-        y.append(album)
-        weights.append(1.0)
-
-    return np.array(X, dtype=np.float32), np.array(y), np.array(weights)
 
 
 # ── MIN_CORR threshold ────────────────────────────────────────────────────────
@@ -146,8 +127,7 @@ class TestWeakLabelFiltering:
             uuids[2]: ("Garten", 0.80, "retrain"),   # at threshold → included
             uuids[3]: ("Garten", 0.95, "retrain"),   # well above → included
         }
-        X, y, _ = build_training_set(corrections, assigned, emb, uuid_to_idx,
-                                     weak_threshold=0.80)
+        X, y, _ = build_training_set(corrections, assigned, emb, uuid_to_idx)
         assert len(X) == 2  # only uuids[2] and uuids[3]
 
     def test_unsure_albums_excluded_from_weak_labels(self):
