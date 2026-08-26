@@ -1,10 +1,32 @@
-"""Unit tests: corrections.csv business logic.
+"""Unit tests: corrections.csv replay semantics, against PRODUCTION code.
 
-These tests exercise the rules that govern corrections.csv without
-starting a server — pure CSV + Python logic.
+corrections.csv is an append-only event log: one row per user decision,
+where the last row per uuid wins and an empty new_album is a tombstone
+(written by empty-thrash / restore) that removes the correction.
+
+An earlier version of this file tested two local replicas of the loading
+logic ("Replicate the load-corrections logic from server.py /
+06_retrain.py") -- deleting the tombstone branch from server.py left every
+test green, and 06_retrain.py's real load_corrections() had in fact
+diverged from the replica: it filtered row-by-row instead of replaying, so
+tombstones and later Thrash corrections did not remove earlier entries and
+retrain resurrected albums the user had explicitly un-corrected. These
+tests import 06_retrain.py itself (via importlib -- the leading digit
+makes it unimportable by name) and pin the replay semantics there.
+The server boot path is pinned separately by tests/test_server_boot.py,
+which exercises server.py's loader through a real process.
 """
 import csv
+import importlib.util
 from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+_spec = importlib.util.spec_from_file_location(
+    "retrain_06", REPO_ROOT / "06_retrain.py"
+)
+retrain = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(retrain)
 
 
 def _write_corrections(path: Path, rows: list[tuple]) -> None:
@@ -16,139 +38,103 @@ def _write_corrections(path: Path, rows: list[tuple]) -> None:
             w.writerow(row)
 
 
-def _load_corrections(path: Path) -> dict[str, str]:
-    """Replicate the load-corrections logic from server.py / 06_retrain.py."""
-    result: dict[str, str] = {}
-    with path.open() as f:
-        for r in csv.DictReader(f):
-            if r["new_album"]:
-                result[r["uuid"]] = r["new_album"]
-            else:
-                result.pop(r["uuid"], None)
-    return result
+def _load(monkeypatch, path: Path) -> dict:
+    """Run the real retrain.load_corrections() against `path`."""
+    monkeypatch.setattr(retrain, "CORRECTIONS_CSV", path)
+    return retrain.load_corrections()
 
 
-# ── Core corrections logic ────────────────────────────────────────────────────
+# ── Core replay semantics ─────────────────────────────────────────────────────
 
 class TestLastEntryWins:
-    def test_second_correction_overwrites_first(self, tmp_path):
-        """Most recent correction for a UUID takes precedence."""
+    def test_second_correction_overwrites_first(self, tmp_path, monkeypatch):
         corr = tmp_path / "corrections.csv"
         _write_corrections(corr, [
-            ("UUID-1", "Garten",   "2024-01-01T10:00:00", "manual"),
-            ("UUID-1", "Kochen",   "2024-01-02T10:00:00", "manual"),
+            ("UUID-1", "Garten", "2024-01-01T10:00:00", "manual"),
+            ("UUID-1", "Kochen", "2024-01-02T10:00:00", "manual"),
         ])
-        result = _load_corrections(corr)
-        assert result["UUID-1"] == "Kochen"
+        assert _load(monkeypatch, corr)["UUID-1"] == "Kochen"
 
-    def test_multiple_uuids_independent(self, tmp_path):
-        """Each UUID is tracked independently."""
+    def test_multiple_uuids_independent(self, tmp_path, monkeypatch):
         corr = tmp_path / "corrections.csv"
         _write_corrections(corr, [
-            ("UUID-A", "Garten",  "2024-01-01T00:00:00", "manual"),
-            ("UUID-B", "Kochen",  "2024-01-01T00:00:00", "manual"),
-            ("UUID-A", "Diverses","2024-01-02T00:00:00", "manual"),
+            ("UUID-A", "Garten",   "2024-01-01T00:00:00", "manual"),
+            ("UUID-B", "Kochen",   "2024-01-01T00:00:00", "manual"),
+            ("UUID-A", "Diverses", "2024-01-02T00:00:00", "manual"),
         ])
-        result = _load_corrections(corr)
+        result = _load(monkeypatch, corr)
         assert result["UUID-A"] == "Diverses"
         assert result["UUID-B"] == "Kochen"
 
+    def test_missing_file_yields_empty(self, tmp_path, monkeypatch):
+        assert _load(monkeypatch, tmp_path / "does-not-exist.csv") == {}
+
 
 class TestTombstone:
-    def test_empty_new_album_removes_uuid(self, tmp_path):
-        """An empty new_album entry is a tombstone: removes the UUID from results."""
+    def test_empty_new_album_removes_uuid(self, tmp_path, monkeypatch):
+        """Regression for the retrain divergence: a tombstone must remove the
+        earlier correction, otherwise retrain pins a restored photo back to
+        its stale album with conf=1.0 on every retrain."""
         corr = tmp_path / "corrections.csv"
         _write_corrections(corr, [
             ("UUID-1", "Garten", "2024-01-01T00:00:00", "manual"),
-            ("UUID-1", "",       "2024-01-02T00:00:00", "undo"),
+            ("UUID-1", "",       "2024-01-02T00:00:00", "restore"),
         ])
-        result = _load_corrections(corr)
-        assert "UUID-1" not in result
+        assert "UUID-1" not in _load(monkeypatch, corr)
 
-    def test_tombstone_then_new_correction_restores(self, tmp_path):
-        """A tombstone can be superseded by a later correction."""
+    def test_correction_after_tombstone_is_active_again(self, tmp_path, monkeypatch):
         corr = tmp_path / "corrections.csv"
         _write_corrections(corr, [
             ("UUID-1", "Garten", "2024-01-01T00:00:00", "manual"),
-            ("UUID-1", "",       "2024-01-02T00:00:00", "undo"),
-            ("UUID-1", "Yves",   "2024-01-03T00:00:00", "redo"),
+            ("UUID-1", "",       "2024-01-02T00:00:00", "restore"),
+            ("UUID-1", "Kochen", "2024-01-03T00:00:00", "manual"),
         ])
-        result = _load_corrections(corr)
-        assert result["UUID-1"] == "Yves"
+        assert _load(monkeypatch, corr)["UUID-1"] == "Kochen"
 
-    def test_multiple_tombstones_ok(self, tmp_path):
-        """Multiple tombstones for same UUID — last tombstone still removes it."""
+    def test_tombstone_for_unknown_uuid_is_harmless(self, tmp_path, monkeypatch):
         corr = tmp_path / "corrections.csv"
         _write_corrections(corr, [
-            ("UUID-1", "Garten", "2024-01-01T00:00:00", "manual"),
-            ("UUID-1", "Kochen", "2024-01-02T00:00:00", "manual"),
-            ("UUID-1", "",       "2024-01-03T00:00:00", "emptied"),
-            ("UUID-1", "",       "2024-01-04T00:00:00", "emptied"),
+            ("UUID-NEVER-CORRECTED", "", "2024-01-01T00:00:00", "restore"),
         ])
-        result = _load_corrections(corr)
-        assert "UUID-1" not in result
+        assert _load(monkeypatch, corr) == {}
 
+
+# ── SKIP_ALBUMS exclusion (final state, not row-by-row) ───────────────────────
 
 class TestSkipAlbums:
-    """Thrash and _test_ corrections are loaded by server but excluded from
-    retrain-status 'new_since_retrain' count (via server /api/retrain-status).
-    The load_corrections() in 06_retrain.py already filters them out."""
-
-    SKIP_ALBUMS = {"Thrash", "_test_"}
-
-    def _load_retrain_corrections(self, path: Path) -> dict[str, str]:
-        """Replicate 06_retrain.py load_corrections() which excludes SKIP_ALBUMS."""
-        result: dict[str, str] = {}
-        with path.open() as f:
-            for r in csv.DictReader(f):
-                if r["new_album"] and r["new_album"] not in self.SKIP_ALBUMS:
-                    result[r["uuid"]] = r["new_album"]
-        return result
-
-    def test_thrash_excluded_from_retrain_corrections(self, tmp_path):
-        """Thrash corrections must not appear in retrain training set."""
+    def test_thrash_excluded_from_retrain_corrections(self, tmp_path, monkeypatch):
         corr = tmp_path / "corrections.csv"
         _write_corrections(corr, [
             ("UUID-KEPT", "Garten", "2024-01-01T00:00:00", "manual"),
             ("UUID-SKIP", "Thrash", "2024-01-01T00:00:00", "manual"),
         ])
-        result = self._load_retrain_corrections(corr)
+        result = _load(monkeypatch, corr)
         assert "UUID-KEPT" in result
         assert "UUID-SKIP" not in result
 
-    def test_test_album_excluded_from_retrain_corrections(self, tmp_path):
-        """_test_ album must not appear in retrain training set."""
+    def test_test_album_excluded_from_retrain_corrections(self, tmp_path, monkeypatch):
         corr = tmp_path / "corrections.csv"
         _write_corrections(corr, [
-            ("UUID-SKIP", "_test_", "2024-01-01T00:00:00", "manual"),
+            ("UUID-T", "_test_", "2024-01-01T00:00:00", "manual"),
         ])
-        result = self._load_retrain_corrections(corr)
-        assert "UUID-SKIP" not in result
+        assert _load(monkeypatch, corr) == {}
 
-    def test_retrain_count_excludes_trash_and_test(self, tmp_path):
-        """new_since_retrain must not count Thrash or _test_ corrections."""
+    def test_later_thrash_correction_removes_earlier_album(self, tmp_path, monkeypatch):
+        """Regression for the retrain divergence: correcting Garten -> Thrash
+        must not leave the photo training/pinned as Garten. Row-by-row
+        filtering skipped the Thrash row without overwriting, so the stale
+        Garten entry survived."""
         corr = tmp_path / "corrections.csv"
         _write_corrections(corr, [
-            ("UUID-A", "Garten",  "2024-01-01T00:00:00", "manual"),
-            ("UUID-B", "Thrash",  "2024-01-01T00:00:00", "manual"),
-            ("UUID-C", "_test_",  "2024-01-01T00:00:00", "manual"),
-            ("UUID-D", "Kochen",  "2024-01-01T00:00:00", "manual"),
+            ("UUID-1", "Garten", "2024-01-01T00:00:00", "manual"),
+            ("UUID-1", "Thrash", "2024-01-02T00:00:00", "manual"),
         ])
-        # Simulated retrain-status logic from server.py
-        corrections_map = {}
-        with corr.open() as f:
-            for r in csv.DictReader(f):
-                if r["new_album"]:
-                    corrections_map[r["uuid"]] = r["new_album"]
-                else:
-                    corrections_map.pop(r["uuid"], None)
-        _skip = {"Thrash", "_test_"}
-        total = sum(1 for v in corrections_map.values() if v not in _skip)
-        assert total == 2  # only UUID-A and UUID-D count
+        assert "UUID-1" not in _load(monkeypatch, corr)
 
-
-class TestEmptyFile:
-    def test_empty_corrections_file_returns_empty_dict(self, tmp_path):
+    def test_correction_after_thrash_is_active(self, tmp_path, monkeypatch):
         corr = tmp_path / "corrections.csv"
-        _write_corrections(corr, [])
-        assert _load_corrections(corr) == {}
+        _write_corrections(corr, [
+            ("UUID-1", "Thrash",  "2024-01-01T00:00:00", "manual"),
+            ("UUID-1", "Kochen",  "2024-01-02T00:00:00", "manual"),
+        ])
+        assert _load(monkeypatch, corr)["UUID-1"] == "Kochen"
