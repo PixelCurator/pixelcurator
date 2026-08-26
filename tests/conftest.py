@@ -34,10 +34,14 @@ TEST_PORT = 8766
 
 # ── temp root (session-scoped: created once, reused across tests) ─────────────
 
-@pytest.fixture(scope="session")
-def temp_root(tmp_path_factory):
-    """Create a minimal PixelCurator root directory with synthetic data."""
-    root = tmp_path_factory.mktemp("pixel_root")
+def make_pixel_root(root: Path) -> Path:
+    """Populate `root` as a minimal PixelCurator sandbox with synthetic data.
+
+    Plain function (not a fixture) so tests that need their own isolated
+    root -- e.g. test_server_boot.py, which must seed corrections.csv
+    *before* the server process starts -- can build one without touching
+    the shared session-scoped `temp_root`."""
+    root.mkdir(parents=True, exist_ok=True)
     meta = root / "metadata"
     emb_dir = root / "embeddings"
     review = root / "review"
@@ -93,6 +97,12 @@ def temp_root(tmp_path_factory):
     )
 
     return root
+
+
+@pytest.fixture(scope="session")
+def temp_root(tmp_path_factory):
+    """Session-scoped minimal PixelCurator root shared by the server tests."""
+    return make_pixel_root(tmp_path_factory.mktemp("pixel_root"))
 
 
 # ── test server (session-scoped: started once, shared across tests) ───────────
