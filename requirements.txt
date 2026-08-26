@@ -3,7 +3,7 @@ torch>=2.13.0
 torchvision>=0.28.0
 open_clip_torch>=3.3
 Pillow>=12.3.0
-numpy>=2.5.1
+numpy>=2.5.2
 
 # NSFW detection
 nudenet>=3.4.2
