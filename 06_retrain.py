@@ -62,15 +62,31 @@ log = logging.getLogger("retrain")
 
 
 def load_corrections() -> dict[str, str]:
-    """uuid -> corrected_album (most recent correction wins)."""
-    result = {}
+    """uuid -> corrected_album, replaying corrections.csv in file order.
+
+    Same replay semantics as every other consumer of corrections.csv
+    (server.py boot, 04_contact_sheets.py, 07_incremental.py,
+    08_import_photos_albums.py): the last entry per uuid wins, and an
+    entry with an empty new_album is a tombstone (written by empty-thrash
+    / restore) that removes any earlier correction. uuids whose FINAL
+    album is in SKIP_ALBUMS are then excluded from retraining.
+
+    The previous version filtered row-by-row instead of replaying: a
+    tombstone or a later Thrash correction did not remove the earlier
+    entry, so a photo the user had restored (or trashed) kept its stale
+    correction -- retrain then pinned it back to the old album with
+    conf=1.0, silently undoing the user's decision after every retrain.
+    """
+    result: dict[str, str] = {}
     if not CORRECTIONS_CSV.exists():
         return result
     with CORRECTIONS_CSV.open() as f:
         for r in csv.DictReader(f):
-            if r["new_album"] and r["new_album"] not in SKIP_ALBUMS:
+            if r["new_album"]:
                 result[r["uuid"]] = r["new_album"]
-    return result
+            else:
+                result.pop(r["uuid"], None)   # tombstone
+    return {u: a for u, a in result.items() if a not in SKIP_ALBUMS}
 
 
 def load_assignments() -> dict[str, tuple[str, float, str]]:
