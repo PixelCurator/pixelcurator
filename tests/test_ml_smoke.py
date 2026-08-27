@@ -57,9 +57,22 @@ def test_clip_zero_shot_classification_is_correct():
     against text prompts. A pipeline that imports fine and produces *some*
     output but a broken/garbage embedding space would still pass a bare
     "did it crash" check; this doesn't."""
+    import warnings
+
     import model_tag
-    model, _, preprocess = open_clip.create_model_and_transforms(
-        model_tag.MODEL_NAME, pretrained=model_tag.PRETRAINED
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        model, _, preprocess = open_clip.create_model_and_transforms(
+            model_tag.MODEL_NAME, pretrained=model_tag.PRETRAINED
+        )
+    # The plain "ViT-B-32" config paired with the OpenAI weights makes
+    # open_clip warn about the QuickGELU activation mismatch (#38). The
+    # production config must load these weights warning-free.
+    quickgelu_warnings = [w for w in caught if "QuickGELU" in str(w.message)]
+    assert not quickgelu_warnings, (
+        f"model config {model_tag.MODEL_NAME!r} does not match the "
+        f"activation the {model_tag.PRETRAINED!r} weights were trained "
+        f"with: {[str(w.message) for w in quickgelu_warnings]}"
     )
     tokenizer = open_clip.get_tokenizer(model_tag.MODEL_NAME)
     model.eval()
