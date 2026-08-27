@@ -70,13 +70,28 @@ if not CORRECTIONS.exists():
     with CORRECTIONS.open("w", newline="") as f:
         csv.writer(f).writerow(["uuid", "new_album", "timestamp", "source"])
 
-corrections = {}
-with CORRECTIONS.open() as f:
-    for r in csv.DictReader(f):
-        if r["new_album"]:            # non-empty = active correction
-            corrections[r["uuid"]] = r["new_album"]
-        else:
-            corrections.pop(r["uuid"], None)   # empty = tombstone from empty-thrash
+def load_corrections_from_csv(path: Path) -> dict:
+    """Replay corrections.csv in file order: the last entry per uuid wins, and
+    an entry with an empty new_album is a tombstone (written by empty-thrash /
+    restore / undo-to-inbox) that removes any earlier correction for that uuid.
+
+    Shared by the boot path below and the /api/test-reset handler -- these
+    used to be two hand-maintained copies of the same loop, which meant the
+    test suite only ever exercised the test-reset copy while the boot copy
+    could drift or break unnoticed (proven by mutating the boot copy: the
+    whole suite stayed green). tests/test_server_boot.py now pins the boot
+    path through this single shared implementation."""
+    result = {}
+    with path.open() as f:
+        for r in csv.DictReader(f):
+            if r["new_album"]:            # non-empty = active correction
+                result[r["uuid"]] = r["new_album"]
+            else:
+                result.pop(r["uuid"], None)   # empty = tombstone
+    return result
+
+
+corrections = load_corrections_from_csv(CORRECTIONS)
 
 # Inbox: load derivative paths for photos not yet in inventory
 INBOX = ROOT / "metadata" / "inbox.csv"
@@ -561,12 +576,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/api/test-reset" and os.environ.get("PIXEL_TEST_MODE") == "1":
             with _lock:
                 corrections.clear()
-                with CORRECTIONS.open() as _f:
-                    for _r in csv.DictReader(_f):
-                        if _r["new_album"]:
-                            corrections[_r["uuid"]] = _r["new_album"]
-                        else:
-                            corrections.pop(_r["uuid"], None)
+                corrections.update(load_corrections_from_csv(CORRECTIONS))
                 _undo_stack.clear()
                 _redo_stack.clear()
             self._json({"ok": True, "corrections": len(corrections)}); return
