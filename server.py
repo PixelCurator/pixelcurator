@@ -164,9 +164,12 @@ def reload_state():
 
 class Handler(BaseHTTPRequestHandler):
     def _cors(self):
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        """No CORS headers: the review UI is served by this server itself, so
+        every legitimate request is same-origin. The previous wildcard
+        (Access-Control-Allow-Origin: *) let any web page in the user's
+        browser read personal photo bytes / album data from 127.0.0.1 and
+        POST state-changing requests (reassign, retrain, commit-inbox).
+        Kept as a no-op hook so the call sites stay in place."""
 
     def do_OPTIONS(self):
         self.send_response(204)

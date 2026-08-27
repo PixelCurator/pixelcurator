@@ -121,7 +121,7 @@ def safe_album_filename(album: str) -> str:
     return album.replace("/", "_").replace(" ", "_").replace("ä", "ae").replace("ö", "oe").replace("ü", "ue").replace("ß", "ss")
 
 
-SERVER_BASE = "http://127.0.0.1:8765/img"
+SERVER_BASE = "/img"  # relative: sheets are served by server.py itself
 
 
 def img_url(uuid: str) -> str:
@@ -224,7 +224,7 @@ let similarItems = [];
 
 async function loadAlbums() {
   if (albums.length) return;
-  const r = await fetch('http://127.0.0.1:8765/api/albums');
+  const r = await fetch('/api/albums');
   albums = await r.json();
   const sel = document.getElementById('m-album');
   sel.innerHTML = '';
@@ -262,9 +262,9 @@ async function advanceModal() {
 async function openModal(uuid) {
   await loadAlbums();
   activeUuid = uuid;
-  document.getElementById('m-img').src = `http://127.0.0.1:8765/img/${uuid}`;
+  document.getElementById('m-img').src = `/img/${uuid}`;
   document.getElementById('m-title').textContent = `Reassign ${uuid.slice(0,8)}…`;
-  const cur = await (await fetch(`http://127.0.0.1:8765/api/current?uuid=${uuid}`)).json();
+  const cur = await (await fetch(`/api/current?uuid=${uuid}`)).json();
   currentAlbum = cur.album;
   document.getElementById('m-current').textContent = cur.album + (cur.corrected ? ' (corrected)' : '');
   // Show/hide Confirm button
@@ -304,7 +304,7 @@ function targetAlbum() {
 async function saveOne() {
   const album = targetAlbum();
   if (!album) { setStatus('no album', '#c55'); return; }
-  const r = await fetch('http://127.0.0.1:8765/api/reassign', {
+  const r = await fetch('/api/reassign', {
     method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({uuid: activeUuid, new_album: album, source: 'manual'})
   });
@@ -320,7 +320,7 @@ async function saveOne() {
 async function confirmOne() {
   if (!currentAlbum || !currentAlbum.endsWith('-unsure')) return;
   const album = currentAlbum.slice(0, -'-unsure'.length);
-  const r = await fetch('http://127.0.0.1:8765/api/reassign', {
+  const r = await fetch('/api/reassign', {
     method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({uuid: activeUuid, new_album: album, source: 'confirm'})
   });
@@ -348,7 +348,7 @@ function _updateThrashBar(delta) {
 // Trash a single uuid — callable from grid (event) or modal (no event)
 async function trashOne(uuid, event) {
   if (event) event.stopPropagation();
-  const r = await fetch('http://127.0.0.1:8765/api/reassign', {
+  const r = await fetch('/api/reassign', {
     method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({uuid, new_album: 'Thrash', source: 'trash'})
   });
@@ -370,7 +370,7 @@ async function loadSimilar() {
   setStatus('searching similar…');
   const target = targetAlbum();
   // Fetch extra candidates so we still have 24 after filtering out the target album
-  const r = await fetch(`http://127.0.0.1:8765/api/similar?uuid=${activeUuid}&n=96`);
+  const r = await fetch(`/api/similar?uuid=${activeUuid}&n=96`);
   const j = await r.json();
   // Only show photos NOT already in the target album
   similarItems = j.similar.filter(s => s.album !== target).slice(0, 24);
@@ -384,7 +384,7 @@ async function loadSimilar() {
     const cell = document.createElement('div');
     cell.className = 'cell';
     cell.dataset.uuid = s.uuid;
-    cell.innerHTML = `<img src="http://127.0.0.1:8765/img/${s.uuid}" loading="lazy"><span class="score">${s.score.toFixed(2)}</span><span class="info">${s.album}</span>`;
+    cell.innerHTML = `<img src="/img/${s.uuid}" loading="lazy"><span class="score">${s.score.toFixed(2)}</span><span class="info">${s.album}</span>`;
     cell.onclick = () => cell.classList.toggle('selected');
     grid.appendChild(cell);
   }
@@ -405,7 +405,7 @@ async function saveSelected() {
   const sel = [...document.querySelectorAll('#m-similar .cell.selected')].map(c => c.dataset.uuid);
   if (!sel.length) { setStatus('nothing selected', '#c55'); return; }
   const allUuids = [activeUuid, ...sel.filter(u => u !== activeUuid)];
-  const r = await fetch('http://127.0.0.1:8765/api/reassign', {
+  const r = await fetch('/api/reassign', {
     method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({uuids: allUuids, new_album: album, source: 'similar-batch'})
   });
@@ -462,7 +462,7 @@ document.addEventListener('click', e => {
 // Refresh undo/redo bar from server state
 async function _refreshUndoBar() {
   try {
-    const j = await (await fetch('http://127.0.0.1:8765/api/undo-status')).json();
+    const j = await (await fetch('/api/undo-status')).json();
     const bar = document.getElementById('undo-bar');
     if (!bar) return;
     if (!j.can_undo && !j.can_redo) { bar.style.display = 'none'; return; }
@@ -478,7 +478,7 @@ async function _refreshUndoBar() {
 
 // Mark already-corrected cells on load; un-mark stale inbox cells not in current corrections
 (async () => {
-  const r = await fetch('http://127.0.0.1:8765/api/corrections');
+  const r = await fetch('/api/corrections');
   const c = await r.json();
   for (const [uuid, album] of Object.entries(c)) {
     markCellCorrected(uuid, album, album === 'Thrash');
@@ -564,7 +564,7 @@ def render_sheet(album: str, uids: list) -> str:
 </div>
 <script>
 (async () => {
-  const r = await fetch('http://127.0.0.1:8765/api/thrash-count');
+  const r = await fetch('/api/thrash-count');
   const j = await r.json();
   document.getElementById('thrash-count').textContent = j.count;
 })();
@@ -583,7 +583,7 @@ async function doEmptyThrash() {
   }
   document.getElementById('empty-thrash-status').textContent = 'Deleting…';
   document.getElementById('empty-thrash-status').style.color = '#888';
-  const r = await fetch('http://127.0.0.1:8765/api/empty-thrash', {
+  const r = await fetch('/api/empty-thrash', {
     method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({confirm:'DELETE'})
   });
@@ -602,7 +602,7 @@ async function doEmptyThrash() {
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeEmptyThrash(); });
 async function restoreOne(uuid, event) {
   if (event) event.stopPropagation();
-  const r = await fetch('http://127.0.0.1:8765/api/restore', {
+  const r = await fetch('/api/restore', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({uuid})
   });
@@ -701,7 +701,7 @@ if inbox_rows:
         uid = r["uuid"]
         fn = r.get("original_filename", "")[:20]
         date = r.get("date", "")[:10]
-        url = f"http://127.0.0.1:8765/img/{uid}"
+        url = f"/img/{uid}"
         inbox_parts.append(
             f'<div class="cell" data-uuid="{uid}" data-conf="0">'
             f'<img src="{url}" loading="lazy">'
@@ -741,7 +741,7 @@ parts.append("""
 <script>
 (async () => {
   try {
-    const r = await fetch('http://127.0.0.1:8765/api/undo-status');
+    const r = await fetch('/api/undo-status');
     const j = await r.json();
     if (!j.can_undo && !j.can_redo) return;
     const bar = document.getElementById('undo-bar');
@@ -757,7 +757,7 @@ parts.append("""
   } catch(e) {}
 })();
 async function doUndoRedo(action) {
-  const r = await fetch('http://127.0.0.1:8765/api/' + action, {method:'POST'});
+  const r = await fetch('/api/' + action, {method:'POST'});
   const j = await r.json();
   if (j.ok) {
     if ((j.reverted ?? 1) > 0) location.reload();
@@ -804,7 +804,7 @@ parts.append("""
 let _retrainNewCorr = 0;
 (async () => {
   try {
-    const r = await fetch('http://127.0.0.1:8765/api/retrain-status');
+    const r = await fetch('/api/retrain-status');
     const j = await r.json();
     _retrainNewCorr = j.new_since_retrain;
     if (j.new_since_retrain === 0) {
@@ -870,7 +870,7 @@ function _doRetrainNow() {
     ['Writing index', 95],
     ['Retrain complete', 98],
   ];
-  const es = new EventSource('http://127.0.0.1:8765/api/retrain-stream?regen=1');
+  const es = new EventSource('/api/retrain-stream?regen=1');
   es.onmessage = function(e) {
     const ev = JSON.parse(e.data);
     if (ev.type === 'done') {
@@ -956,7 +956,7 @@ async function runInboxPhase(phase) {{
   }} else {{
     logWrap.style.display = 'block';
   }}
-  const es = new EventSource('http://127.0.0.1:8765/api/inbox-' + phase + '-stream');
+  const es = new EventSource('/api/inbox-' + phase + '-stream');
   es.onmessage = function(e) {{
     const ev = JSON.parse(e.data);
     if (ev.type === 'done') {{
@@ -992,7 +992,7 @@ async function runInboxPhase(phase) {{
 }}
 (async () => {{
   try {{
-    const r = await fetch('http://127.0.0.1:8765/api/inbox-count');
+    const r = await fetch('/api/inbox-count');
     const j = await r.json();
     // Counts: j.count=unsorted, j.total=all inbox, j.sorted=manually assigned
     if (j.total === 0) {{
@@ -1062,7 +1062,7 @@ if inbox_rows:
         _uid = _r["uuid"]
         _fn = html.escape(_r.get("original_filename", "")[:20])
         _date = html.escape(_r.get("date", "")[:10])
-        _url = f"http://127.0.0.1:8765/img/{_uid}"
+        _url = f"/img/{_uid}"
         # Already corrected (e.g. Thrash) → add class so _renderInbox() skips it
         _cls = "cell corrected" if _uid in _corr else "cell"
         parts.append(
@@ -1160,7 +1160,7 @@ function inboxNextPage() {{
 let _inboxAlbumsLoaded = false;
 async function _loadInboxBatchAlbums() {{
   if (_inboxAlbumsLoaded) return;
-  const r = await fetch('http://127.0.0.1:8765/api/albums');
+  const r = await fetch('/api/albums');
   const albs = await r.json();
   const sel = document.getElementById('inbox-batch-album');
   sel.innerHTML = albs.map(a => `<option value="${{a}}">${{a}}</option>`).join('');
@@ -1200,7 +1200,7 @@ async function inboxBatchAssign() {{
   if (!uuids.length) return;
   const album = document.getElementById('inbox-batch-album').value;
   if (!album) return;
-  const r = await fetch('http://127.0.0.1:8765/api/reassign', {{
+  const r = await fetch('/api/reassign', {{
     method:'POST', headers:{{'Content-Type':'application/json'}},
     body: JSON.stringify({{uuids, new_album: album, source:'manual'}})
   }});
@@ -1210,7 +1210,7 @@ async function inboxBatchAssign() {{
 async function inboxBatchTrash() {{
   const uuids = _inboxSelected().map(c => c.dataset.uuid);
   if (!uuids.length) return;
-  const r = await fetch('http://127.0.0.1:8765/api/reassign', {{
+  const r = await fetch('/api/reassign', {{
     method:'POST', headers:{{'Content-Type':'application/json'}},
     body: JSON.stringify({{uuids, new_album:'Thrash', source:'trash'}})
   }});
@@ -1219,7 +1219,7 @@ async function inboxBatchTrash() {{
     for (const u of uuids) markCellCorrected(u, 'Thrash', true);
     inboxDeselectAll();
     // Refresh thrash counter
-    const t = await fetch('http://127.0.0.1:8765/api/thrash-count');
+    const t = await fetch('/api/thrash-count');
     const tj = await t.json();
     const el = document.getElementById('thrash-count');
     if (el) el.textContent = tj.count;
@@ -1263,7 +1263,7 @@ parts.append("""
 </div>
 <script>
 (async () => {
-  const r = await fetch('http://127.0.0.1:8765/api/thrash-count');
+  const r = await fetch('/api/thrash-count');
   const j = await r.json();
   document.getElementById('thrash-count').textContent = j.count;
   if (j.count === 0) {
@@ -1291,7 +1291,7 @@ async function doEmptyThrash() {
   }
   document.getElementById('empty-thrash-status').textContent = 'Deleting…';
   document.getElementById('empty-thrash-status').style.color = '#888';
-  const r = await fetch('http://127.0.0.1:8765/api/empty-thrash', {
+  const r = await fetch('/api/empty-thrash', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({confirm: 'DELETE'})
   });
@@ -1407,7 +1407,7 @@ async function doRename(oldName, newName, input, btn, link) {
   }
   input.disabled = true;
   input.style.opacity = '0.5';
-  const r = await fetch('http://127.0.0.1:8765/api/rename-album', {
+  const r = await fetch('/api/rename-album', {
     method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({old_name: oldName, new_name: newName})
   });
@@ -1444,7 +1444,7 @@ function startMerge(albumName, btn) {
 }
 async function doMerge(source, target, sel) {
   sel.disabled = true;
-  const r = await fetch('http://127.0.0.1:8765/api/merge-album', {
+  const r = await fetch('/api/merge-album', {
     method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({source, target})
   });
