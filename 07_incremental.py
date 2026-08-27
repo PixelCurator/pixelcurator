@@ -27,6 +27,7 @@ from pathlib import Path
 import numpy as np
 
 import corrections_log
+import model_tag
 
 ROOT = Path(os.environ.get("PIXEL_ROOT", str(Path.home() / "photo-sort")))
 INV_CSV = ROOT / "metadata" / "inventory.csv"
@@ -174,9 +175,16 @@ def run_process(regen: bool = True):
             log.error(f"Missing dependency: {e}. Run inside the venv.")
             sys.exit(2)
 
+        # Guard BEFORE loading CLIP: this path appends to the existing .npy,
+        # so a stored space from a different model config must hard-fail here,
+        # not silently mix spaces (#38).
+        model_tag.check_tag(EMB_NPY)
+
         device = "mps" if torch.backends.mps.is_available() else "cpu"
-        log.info(f"  Loading CLIP (device={device})…")
-        model, _, preprocess = open_clip.create_model_and_transforms("ViT-B-32", pretrained="openai")
+        log.info(f"  Loading CLIP {model_tag.MODEL_NAME} (device={device})…")
+        model, _, preprocess = open_clip.create_model_and_transforms(
+            model_tag.MODEL_NAME, pretrained=model_tag.PRETRAINED
+        )
         model = model.to(device).eval()
         log.info("  CLIP ready")
 
@@ -224,6 +232,7 @@ def run_process(regen: bool = True):
         combined_uuids = old_uuids + new_uuids
         np.save(EMB_NPY, combined_emb)
         EMB_IDX.write_text(json.dumps(combined_uuids))
+        model_tag.write_tag(EMB_NPY)
         log.info(f"  Embeddings: {len(old_uuids)} → {len(combined_uuids)}")
     else:
         combined_emb = np.load(EMB_NPY)

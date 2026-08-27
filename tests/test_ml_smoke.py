@@ -57,10 +57,11 @@ def test_clip_zero_shot_classification_is_correct():
     against text prompts. A pipeline that imports fine and produces *some*
     output but a broken/garbage embedding space would still pass a bare
     "did it crash" check; this doesn't."""
+    import model_tag
     model, _, preprocess = open_clip.create_model_and_transforms(
-        "ViT-B-32", pretrained="openai"
+        model_tag.MODEL_NAME, pretrained=model_tag.PRETRAINED
     )
-    tokenizer = open_clip.get_tokenizer("ViT-B-32")
+    tokenizer = open_clip.get_tokenizer(model_tag.MODEL_NAME)
     model.eval()
 
     red = PIL_Image.new("RGB", (224, 224), (220, 20, 20))
@@ -278,3 +279,82 @@ def test_01_embed_parallel_loader_errors_and_resume(tmp_path):
     idx2 = json.loads((root / "embeddings" / "clip_vitb32_uuids.json").read_text())
     assert idx2 == good, "resume must not re-embed or duplicate uuids"
     assert np.array_equal(emb2, emb), "resume must leave embeddings untouched"
+
+
+# ── 6. Embedding-space tag guard: resume-append onto a foreign space fails ────
+
+def test_01_embed_hard_fails_on_mismatched_space_tag(tmp_path):
+    """Runs 01_embed.py against a sandbox, then tampers the sidecar model
+    tag to a different config and adds a new photo. The second run must
+    exit non-zero and leave the artefacts byte-identical -- the resume path
+    APPENDS to the existing .npy, so without this guard a model-config
+    switch would silently mix incompatible embedding spaces (#38)."""
+    import json
+
+    import numpy as np
+
+    root = tmp_path / "pixel-root"
+    meta = root / "metadata"
+    photos = root / "photos"
+    meta.mkdir(parents=True)
+    photos.mkdir()
+
+    header = ["uuid", "original_filename", "date", "ismissing",
+              "has_local_original", "has_local_derivative",
+              "derivative_path", "derivative_size_bytes",
+              "uti_original", "isphoto", "ismovie"]
+
+    def photo_row(uid, color):
+        p = photos / f"{uid}.jpg"
+        PIL_Image.new("RGB", (320, 240), color).save(p, "JPEG")
+        return [uid, p.name, "2024-01-01", "False", "False", "True",
+                str(p), "1000", "public.jpeg", "True", "False"]
+
+    rows = [photo_row(f"TAG-{i:02d}", (40 * i, 90, 180)) for i in range(3)]
+    with (meta / "inventory.csv").open("w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(header)
+        w.writerows(rows)
+
+    env = os.environ.copy()
+    env["PIXEL_ROOT"] = str(root)
+
+    def run():
+        return subprocess.run(
+            [sys.executable, str(REPO_ROOT / "01_embed.py")],
+            env=env, capture_output=True, text=True, timeout=300,
+        )
+
+    first = run()
+    assert first.returncode == 0, first.stderr
+
+    emb_path = root / "embeddings" / "clip_vitb32.npy"
+    idx_path = root / "embeddings" / "clip_vitb32_uuids.json"
+    tag_path = root / "embeddings" / "clip_vitb32.model.json"
+    assert tag_path.exists(), "01_embed.py must write the model tag sidecar"
+    emb_before = emb_path.read_bytes()
+    idx_before = idx_path.read_text()
+
+    # Tamper: pretend the stored space came from a different model config,
+    # then add a new photo so the resume path would have something to append.
+    tag_path.write_text(json.dumps({"model": "ViT-B-32-other", "pretrained": "openai"}))
+    rows.append(photo_row("TAG-99", (200, 30, 30)))
+    with (meta / "inventory.csv").open("w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(header)
+        w.writerows(rows)
+
+    second = run()
+    assert second.returncode != 0, (
+        "01_embed.py must hard-fail on a mismatched space tag, got rc=0\n"
+        f"stdout:\n{second.stdout}"
+    )
+    assert "EmbeddingSpaceMismatch" in (second.stdout + second.stderr)
+    assert emb_path.read_bytes() == emb_before, "no silent append on mismatch"
+    assert idx_path.read_text() == idx_before, "uuid index untouched on mismatch"
+
+    # And with a missing sidecar (legacy untagged artefacts): same hard fail.
+    tag_path.unlink()
+    third = run()
+    assert third.returncode != 0, "missing sidecar must not be silently adopted"
+    assert emb_path.read_bytes() == emb_before

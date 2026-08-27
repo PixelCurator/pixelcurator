@@ -22,6 +22,8 @@ import torch
 import open_clip
 from PIL import Image
 
+import model_tag
+
 ROOT = Path(os.environ.get("PIXEL_ROOT", str(Path.home() / "photo-sort")))
 CSV_PATH = ROOT / "metadata" / "inventory.csv"
 EMB_PATH = ROOT / "embeddings" / "clip_vitb32.npy"
@@ -56,9 +58,16 @@ log = logging.getLogger("embed")
 device = "mps" if torch.backends.mps.is_available() else "cpu"
 log.info(f"START. device={device} batch={BATCH_SIZE}")
 
-log.info("Loading CLIP ViT-B-32 (openai)...")
+# Guard before anything else: resuming would APPEND to the existing .npy,
+# so embeddings produced by a different model config must hard-fail here,
+# not silently mix spaces (#38).
+model_tag.check_tag(EMB_PATH)
+
+log.info(f"Loading CLIP {model_tag.MODEL_NAME} ({model_tag.PRETRAINED})...")
 t0 = time.time()
-model, _, preprocess = open_clip.create_model_and_transforms("ViT-B-32", pretrained="openai")
+model, _, preprocess = open_clip.create_model_and_transforms(
+    model_tag.MODEL_NAME, pretrained=model_tag.PRETRAINED
+)
 model = model.to(device).eval()
 log.info(f"  model ready in {time.time()-t0:.1f}s")
 
@@ -112,6 +121,7 @@ def persist():
     arr = np.concatenate(collected_emb, axis=0)
     np.save(EMB_PATH, arr)
     IDX_PATH.write_text(json.dumps(collected_uuids))
+    model_tag.write_tag(EMB_PATH)
 
 
 def decode_one(row):
