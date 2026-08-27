@@ -7,11 +7,14 @@ Robustness:
 - Resume if partial output exists (skip already-embedded UUIDs)
 """
 import csv
+import itertools
 import json
 import logging
 import os
 import sys
 import time
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -28,6 +31,17 @@ ERR_PATH = ROOT / "logs" / "01_embed_errors.log"
 
 BATCH_SIZE = 64
 FLUSH_EVERY = 2000
+
+# Decode parallelism. The embed loop used to be strictly serial (decode N,
+# then infer N): PIL decode+preprocess ran single-threaded at ~52 img/s
+# while MPS inference managed ~123 img/s, so the GPU idled ~74% of the time
+# and the observed rate was ~32 img/s (measured 2026-08-27 on a synthetic
+# 1,024-photo 640x480 library, see #39). PIL's JPEG decode and the tensor
+# ops release the GIL, so a thread pool overlaps decode with inference.
+NUM_DECODE_WORKERS = int(os.environ.get("PIXEL_DECODE_WORKERS", "8"))
+# Bounded prefetch keeps memory flat (~0.6 MB per preprocessed tensor):
+# at most PREFETCH decoded tensors are in flight ahead of inference.
+PREFETCH = BATCH_SIZE * 4
 
 LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
 EMB_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -100,15 +114,42 @@ def persist():
     IDX_PATH.write_text(json.dumps(collected_uuids))
 
 
-for i, row in enumerate(todo):
+def decode_one(row):
+    """Decode + preprocess one photo in a worker thread. Never raises: a
+    failed decode is returned as an error tuple so it is logged per-file on
+    the main thread and cannot kill a worker or a batch."""
     try:
         img = Image.open(row["derivative_path"]).convert("RGB")
-        buffer_imgs.append(preprocess(img))
-        buffer_uuids.append(row["uuid"])
-    except Exception as e:
+        return row, preprocess(img), None
+    except Exception as e:  # noqa: BLE001 — any decode failure is a data error
+        return row, None, e
+
+
+# Sliding window of decode futures: workers decode ahead (bounded by
+# PREFETCH) while the main thread batches tensors and runs MPS inference.
+# Results are consumed in submission order, so resume semantics and the
+# FLUSH_EVERY persist cadence are identical to the serial version.
+pool = ThreadPoolExecutor(max_workers=NUM_DECODE_WORKERS)
+todo_iter = iter(todo)
+pending = deque()
+for row in itertools.islice(todo_iter, PREFETCH):
+    pending.append(pool.submit(decode_one, row))
+
+i = -1
+while pending:
+    i += 1
+    row, tensor, err = pending.popleft().result()
+    nxt = next(todo_iter, None)
+    if nxt is not None:
+        pending.append(pool.submit(decode_one, nxt))
+
+    if err is not None:
         total_failed += 1
-        err_f.write(f"{row['uuid']}\t{row['derivative_path']}\t{e}\n")
+        err_f.write(f"{row['uuid']}\t{row['derivative_path']}\t{err}\n")
         err_f.flush()
+    else:
+        buffer_imgs.append(tensor)
+        buffer_uuids.append(row["uuid"])
 
     if len(buffer_imgs) >= BATCH_SIZE:
         flush_buffer()
@@ -125,10 +166,14 @@ for i, row in enumerate(todo):
         log.info(f"  progress {i+1}/{len(todo)}  rate {rate:.1f} img/s  eta {eta_min:.0f} min  fail {total_failed}")
         done_since_flush = 0
 
+pool.shutdown(wait=True)
 flush_buffer()
 persist()
 err_f.close()
 
 elapsed = time.time() - t_start
-log.info(f"DONE. embedded {len(collected_uuids)} (this run +{len(todo)-total_failed}), failed {total_failed}, {elapsed/60:.1f} min")
+n_this_run = len(todo) - total_failed
+rate = n_this_run / max(elapsed, 1e-9)
+log.info(f"DONE. embedded {len(collected_uuids)} (this run +{n_this_run}), failed {total_failed}, "
+         f"{elapsed:.1f}s ({rate:.1f} img/s)")
 log.info(f"  embeddings: {EMB_PATH}  ({EMB_PATH.stat().st_size/1e6:.1f} MB)")
