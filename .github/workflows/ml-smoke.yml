@@ -80,14 +80,17 @@ jobs:
           cache-dependency-path: requirements.txt
 
       # CLIP ViT-B-32 "openai" weights (~350MB) land in ~/.cache/huggingface
-      # via open_clip's HF Hub download path. NudeNet's ONNX weights ship
-      # inside the nudenet wheel itself (no separate download), so they're
-      # already covered by the pip cache above.
+      # via open_clip's HF Hub download path. The -quickgelu model config
+      # (see model_tag.py, #38) downloads the SAME openai checkpoint -- only
+      # the activation function in the model definition differs -- so the key
+      # rename below is for clarity only, not a content change. NudeNet's
+      # ONNX weights ship inside the nudenet wheel itself (no separate
+      # download), so they're already covered by the pip cache above.
       - name: Cache CLIP model weights
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/huggingface
-          key: ml-smoke-clip-vitb32-openai-${{ hashFiles('requirements.txt') }}
+          key: ml-smoke-clip-vitb32-quickgelu-openai-${{ hashFiles('requirements.txt') }}
 
       - name: Install dependencies
         run: python -m pip install --upgrade pip pytest -r requirements.txt
