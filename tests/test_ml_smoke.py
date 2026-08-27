@@ -203,3 +203,78 @@ def test_nudedetector_via_02_nsfw_production_path(tmp_path):
     # Sanity: confidence must parse as a real number (a Python exception
     # string surviving into this column would fail this).
     float(row["nsfw_confidence"])
+
+
+# ── 5. 01_embed.py end-to-end: parallel decode, error logging, resume ─────────
+
+def test_01_embed_parallel_loader_errors_and_resume(tmp_path):
+    """Runs 01_embed.py itself against a small synthetic sandbox, twice.
+
+    Pins the guarantees the parallel decode loader (#39) must preserve from
+    the serial version: every decodable photo is embedded exactly once and
+    in inventory order, a broken file is logged to 01_embed_errors.log
+    without killing its batch or a worker, and a second run resumes (skips
+    all already-embedded uuids, embeds 0 new).
+    """
+    import json
+
+    import numpy as np
+
+    root = tmp_path / "pixel-root"
+    meta = root / "metadata"
+    photos = root / "photos"
+    meta.mkdir(parents=True)
+    photos.mkdir()
+
+    uuids = [f"EMBED-{i:02d}" for i in range(8)]
+    rows = []
+    for i, uid in enumerate(uuids):
+        p = photos / f"{uid}.jpg"
+        if i == 3:  # not a JPEG: decode must fail, be logged, not kill the run
+            p.write_bytes(b"this is not an image")
+        else:
+            PIL_Image.new("RGB", (320, 240), (10 * i, 128, 200)).save(p, "JPEG")
+        rows.append([uid, p.name, "2024-01-01", "False", "False", "True",
+                     str(p), "1000", "public.jpeg", "True", "False"])
+
+    with (meta / "inventory.csv").open("w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["uuid", "original_filename", "date", "ismissing",
+                    "has_local_original", "has_local_derivative",
+                    "derivative_path", "derivative_size_bytes",
+                    "uti_original", "isphoto", "ismovie"])
+        w.writerows(rows)
+
+    env = os.environ.copy()
+    env["PIXEL_ROOT"] = str(root)
+
+    def run():
+        result = subprocess.run(
+            [sys.executable, str(REPO_ROOT / "01_embed.py")],
+            env=env, capture_output=True, text=True, timeout=300,
+        )
+        assert result.returncode == 0, (
+            f"01_embed.py exited {result.returncode}\n"
+            f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+        )
+        return result
+
+    run()
+
+    emb = np.load(root / "embeddings" / "clip_vitb32.npy")
+    idx = json.loads((root / "embeddings" / "clip_vitb32_uuids.json").read_text())
+    good = [u for i, u in enumerate(uuids) if i != 3]
+    assert idx == good, "all decodable photos, in inventory order, exactly once"
+    assert emb.shape == (7, 512)
+    norms = np.linalg.norm(emb, axis=1)
+    assert np.allclose(norms, 1.0, atol=1e-3), "embeddings must be L2-normalised"
+
+    err_log = (root / "logs" / "01_embed_errors.log").read_text()
+    assert "EMBED-03" in err_log, "failed decode must be logged per-file"
+
+    # Second run: resume must skip everything already embedded
+    run()
+    emb2 = np.load(root / "embeddings" / "clip_vitb32.npy")
+    idx2 = json.loads((root / "embeddings" / "clip_vitb32_uuids.json").read_text())
+    assert idx2 == good, "resume must not re-embed or duplicate uuids"
+    assert np.array_equal(emb2, emb), "resume must leave embeddings untouched"
