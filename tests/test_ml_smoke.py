@@ -145,15 +145,13 @@ def test_nudedetector_via_02_nsfw_production_path(tmp_path):
     guard) run through onnxruntime exactly as they do in the real pipeline,
     not through a hand-rolled substitute call in this test file.
 
-    02_nsfw.py hardcodes `ROOT = Path.home() / "photo-sort"` (unlike
-    04_contact_sheets/06_retrain/07_incremental/08_import_photos_albums, it
-    doesn't read $PIXEL_ROOT) -- so the sandbox is built under an overridden
-    $HOME for this subprocess only, the same test-isolation approach
-    conftest.py already uses to keep tests off the real photo-sort
-    directory.
+    The sandbox is passed via $PIXEL_ROOT, which every pipeline script now
+    honours (an earlier version of this test had to fake $HOME for the
+    subprocess because 02_nsfw.py hardcoded `ROOT = Path.home() /
+    "photo-sort"` -- a bug in that trick would have pointed the script at
+    the real photo library).
     """
-    fake_home = tmp_path / "home"
-    root = fake_home / "photo-sort"
+    root = tmp_path / "pixel-root"
     metadata = root / "metadata"
     metadata.mkdir(parents=True)
 
@@ -175,7 +173,7 @@ def test_nudedetector_via_02_nsfw_production_path(tmp_path):
         ])
 
     env = os.environ.copy()
-    env["HOME"] = str(fake_home)
+    env["PIXEL_ROOT"] = str(root)
 
     result = subprocess.run(
         [sys.executable, str(REPO_ROOT / "02_nsfw.py")],

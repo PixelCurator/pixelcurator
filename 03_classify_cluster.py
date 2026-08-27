@@ -16,6 +16,7 @@ Remaining photos → HDBSCAN clusters (top-K by size).
 import csv
 import json
 import logging
+import os
 import sys
 import time
 from collections import Counter, defaultdict
@@ -26,7 +27,7 @@ import torch
 import open_clip
 from sklearn.cluster import MiniBatchKMeans
 
-ROOT = Path.home() / "photo-sort"
+ROOT = Path(os.environ.get("PIXEL_ROOT", str(Path.home() / "photo-sort")))
 EMB_PATH = ROOT / "embeddings" / "clip_vitb32.npy"
 IDX_PATH = ROOT / "embeddings" / "clip_vitb32_uuids.json"
 NSFW_CSV = ROOT / "metadata" / "nsfw_scores.csv"

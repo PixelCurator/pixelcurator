@@ -10,6 +10,7 @@ NudeNet v3 API: NudeDetector().detect(image_path) → list of {class, score, box
 """
 import csv
 import logging
+import os
 import sys
 import time
 from pathlib import Path
@@ -17,7 +18,7 @@ from pathlib import Path
 from PIL import Image
 from nudenet import NudeDetector
 
-ROOT = Path.home() / "photo-sort"
+ROOT = Path(os.environ.get("PIXEL_ROOT", str(Path.home() / "photo-sort")))
 CSV_IN = ROOT / "metadata" / "inventory.csv"
 CSV_OUT = ROOT / "metadata" / "nsfw_scores.csv"
 LOG_PATH = ROOT / "logs" / "02_nsfw.log"
