@@ -10,6 +10,8 @@ import open_clip
 from PIL import Image
 import numpy as np
 
+import model_tag
+
 CSV_PATH = Path.home() / "photo-sort" / "metadata" / "inventory.csv"
 N_SAMPLE = 200
 BATCH_SIZE = 32
@@ -17,10 +19,12 @@ BATCH_SIZE = 32
 device = "mps" if torch.backends.mps.is_available() else "cpu"
 print(f"Device: {device}")
 
-print("Loading CLIP ViT-B-32 (OpenAI)...")
+print(f"Loading CLIP {model_tag.MODEL_NAME} ({model_tag.PRETRAINED})...")
 t0 = time.time()
-model, _, preprocess = open_clip.create_model_and_transforms("ViT-B-32", pretrained="openai")
-tokenizer = open_clip.get_tokenizer("ViT-B-32")
+model, _, preprocess = open_clip.create_model_and_transforms(
+    model_tag.MODEL_NAME, pretrained=model_tag.PRETRAINED
+)
+tokenizer = open_clip.get_tokenizer(model_tag.MODEL_NAME)
 model = model.to(device).eval()
 print(f"  loaded in {time.time()-t0:.1f}s")
 

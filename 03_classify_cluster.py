@@ -25,6 +25,8 @@ from pathlib import Path
 import numpy as np
 import torch
 import open_clip
+
+import model_tag
 from sklearn.cluster import MiniBatchKMeans
 
 ROOT = Path(os.environ.get("PIXEL_ROOT", str(Path.home() / "photo-sort")))
@@ -72,8 +74,13 @@ else:
 # ---------- CLIP text encodings ----------
 log.info("Encoding seed text prompts via CLIP...")
 device = "mps" if torch.backends.mps.is_available() else "cpu"
-model, _, _ = open_clip.create_model_and_transforms("ViT-B-32", pretrained="openai")
-tokenizer = open_clip.get_tokenizer("ViT-B-32")
+# Text embeddings get compared against the stored image space below --
+# hard-fail if the stored space came from a different model config (#38).
+model_tag.check_tag(EMB_PATH)
+model, _, _ = open_clip.create_model_and_transforms(
+    model_tag.MODEL_NAME, pretrained=model_tag.PRETRAINED
+)
+tokenizer = open_clip.get_tokenizer(model_tag.MODEL_NAME)
 model = model.to(device).eval()
 
 seed_groups = {
