@@ -1,6 +1,6 @@
 """Integration tests: PixelCurator server HTTP API.
 
-All tests run against an ephemeral test server on port 8766, backed by
+All tests run against an ephemeral test server (kernel-picked port), backed by
 a temp directory with synthetic data (see conftest.py). The live server
 on port 8765 is never touched.
 
