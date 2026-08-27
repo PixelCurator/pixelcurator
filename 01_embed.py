@@ -9,6 +9,7 @@ Robustness:
 import csv
 import json
 import logging
+import os
 import sys
 import time
 from pathlib import Path
@@ -18,7 +19,7 @@ import torch
 import open_clip
 from PIL import Image
 
-ROOT = Path.home() / "photo-sort"
+ROOT = Path(os.environ.get("PIXEL_ROOT", str(Path.home() / "photo-sort")))
 CSV_PATH = ROOT / "metadata" / "inventory.csv"
 EMB_PATH = ROOT / "embeddings" / "clip_vitb32.npy"
 IDX_PATH = ROOT / "embeddings" / "clip_vitb32_uuids.json"
