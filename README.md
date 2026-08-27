@@ -80,7 +80,7 @@ python server.py
 
 ## Architecture notes
 
-See [`../../.claude/memory/wish_photo_sort_dockerization.md`](file:///Users/yves/.claude/memory/wish_photo_sort_dockerization.md) for the productization roadmap:
+Productization roadmap (decisions on file):
 - Decision: native macOS app (not web — iCloud doesn't expose OAuth for Photos)
 - Hybrid migration path: SwiftUI shell + embedded Python + WKWebView for the existing review UI
 - Monetization: €39 one-time + free tier up to ~2 000 photos, no time trial
