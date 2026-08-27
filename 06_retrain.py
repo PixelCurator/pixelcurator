@@ -33,6 +33,8 @@ from pathlib import Path
 
 import numpy as np
 
+import corrections_log
+
 ROOT = Path(os.environ.get("PIXEL_ROOT", str(Path.home() / "photo-sort")))
 ASSIGN_CSV = ROOT / "metadata" / "assignments.csv"
 CORRECTIONS_CSV = ROOT / "metadata" / "corrections.csv"
@@ -51,7 +53,7 @@ MIN_CORR = 3
 WEAK_THRESHOLD = 0.80   # was 0.92 — lowered so albums with conf 0.80-0.92 survive retrain
 
 # Albums that are local-only / noise — never used as training labels
-SKIP_ALBUMS = {"Thrash", "_test_"}
+SKIP_ALBUMS = corrections_log.SKIP_ALBUMS
 
 logging.basicConfig(
     level=logging.INFO,
@@ -62,31 +64,17 @@ log = logging.getLogger("retrain")
 
 
 def load_corrections() -> dict[str, str]:
-    """uuid -> corrected_album, replaying corrections.csv in file order.
+    """uuid -> corrected_album for training, via the shared replay in
+    corrections_log.py: last entry per uuid wins, tombstones remove earlier
+    entries, and uuids whose FINAL album is in SKIP_ALBUMS are excluded.
 
-    Same replay semantics as every other consumer of corrections.csv
-    (server.py boot, 04_contact_sheets.py, 07_incremental.py,
-    08_import_photos_albums.py): the last entry per uuid wins, and an
-    entry with an empty new_album is a tombstone (written by empty-thrash
-    / restore) that removes any earlier correction. uuids whose FINAL
-    album is in SKIP_ALBUMS are then excluded from retraining.
-
-    The previous version filtered row-by-row instead of replaying: a
-    tombstone or a later Thrash correction did not remove the earlier
-    entry, so a photo the user had restored (or trashed) kept its stale
-    correction -- retrain then pinned it back to the old album with
-    conf=1.0, silently undoing the user's decision after every retrain.
+    A previous hand-copied version of this loop filtered row-by-row instead
+    of replaying: a tombstone or a later Thrash correction did not remove
+    the earlier entry, so retrain pinned restored/trashed photos back to
+    their stale album with conf=1.0 after every retrain (#34). The replay
+    now lives in exactly one place.
     """
-    result: dict[str, str] = {}
-    if not CORRECTIONS_CSV.exists():
-        return result
-    with CORRECTIONS_CSV.open() as f:
-        for r in csv.DictReader(f):
-            if r["new_album"]:
-                result[r["uuid"]] = r["new_album"]
-            else:
-                result.pop(r["uuid"], None)   # tombstone
-    return {u: a for u, a in result.items() if a not in SKIP_ALBUMS}
+    return corrections_log.replay_excluding_skip_albums(CORRECTIONS_CSV)
 
 
 def load_assignments() -> dict[str, tuple[str, float, str]]:

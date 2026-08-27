@@ -19,6 +19,8 @@ from collections import defaultdict
 from pathlib import Path
 from urllib.parse import quote
 
+import corrections_log
+
 ROOT = Path(os.environ.get("PIXEL_ROOT", str(Path.home() / "photo-sort")))
 INV_CSV = ROOT / "metadata" / "inventory.csv"
 ASSIGN_CSV = ROOT / "metadata" / "assignments.csv"
@@ -72,15 +74,9 @@ log.info(f"  {len(album_to_uids)} albums, {len(uid_to_assign)} photos assigned")
 
 # Apply corrections on top of assignments (same logic as server.py / current_album())
 CORRECTIONS_CSV = ROOT / "metadata" / "corrections.csv"
-SKIP_ALBUMS_SET = {"Thrash", "_test_"}
+SKIP_ALBUMS_SET = corrections_log.SKIP_ALBUMS
 if CORRECTIONS_CSV.exists():
-    _corr: dict[str, str] = {}
-    with CORRECTIONS_CSV.open() as f:
-        for r in csv.DictReader(f):
-            if r.get("new_album"):
-                _corr[r["uuid"]] = r["new_album"]
-            else:
-                _corr.pop(r["uuid"], None)
+    _corr: dict[str, str] = corrections_log.replay(CORRECTIONS_CSV)
     _moved = 0
     for _uid, _new_album in _corr.items():
         if _new_album in SKIP_ALBUMS_SET:

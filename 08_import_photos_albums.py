@@ -25,6 +25,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import corrections_log
+
 ROOT = Path(os.environ.get("PIXEL_ROOT", str(Path.home() / "photo-sort")))
 ASSIGN_CSV = ROOT / "metadata" / "assignments.csv"
 CORRECTIONS_CSV = ROOT / "metadata" / "corrections.csv"
@@ -145,20 +147,10 @@ def run_import(dump: dict, dry_run: bool, skip_new: bool) -> dict:
     log.info("  Our assignments: %d photos, %d albums",
              len(our_assigned), len(set(our_assigned.values())))
 
-    # Load corrections: identify manual ones (do NOT override)
-    manual_sources = {"manual", "confirm", "similar-batch"}
-    manual_corrections: set[str] = set()
-    existing_corrections: dict[str, str] = {}
-    if CORRECTIONS_CSV.exists():
-        with CORRECTIONS_CSV.open() as f:
-            for r in csv.DictReader(f):
-                if r.get("new_album"):
-                    existing_corrections[r["uuid"]] = r["new_album"]
-                    if r.get("source") in manual_sources:
-                        manual_corrections.add(r["uuid"])
-                else:
-                    existing_corrections.pop(r["uuid"], None)
-                    manual_corrections.discard(r["uuid"])
+    # Load corrections via the shared replay; manual ones are protected
+    # (sources in corrections_log.MANUAL_SOURCES are never overridden).
+    existing_corrections, manual_corrections = (
+        corrections_log.replay_with_manual_protection(CORRECTIONS_CSV))
     log.info("  Manual corrections (protected): %d", len(manual_corrections))
 
     # ── Build album lookup ──────────────────────────────────────────────────
