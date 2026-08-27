@@ -24,6 +24,8 @@ from pathlib import Path
 
 import numpy as np
 
+import corrections_log
+
 ROOT = Path(os.environ.get("PIXEL_ROOT", str(Path.home() / "photo-sort")))
 REVIEW = ROOT / "review"
 INV = ROOT / "metadata" / "inventory.csv"
@@ -70,26 +72,11 @@ if not CORRECTIONS.exists():
     with CORRECTIONS.open("w", newline="") as f:
         csv.writer(f).writerow(["uuid", "new_album", "timestamp", "source"])
 
-def load_corrections_from_csv(path: Path) -> dict:
-    """Replay corrections.csv in file order: the last entry per uuid wins, and
-    an entry with an empty new_album is a tombstone (written by empty-thrash /
-    restore / undo-to-inbox) that removes any earlier correction for that uuid.
-
-    Shared by the boot path below and the /api/test-reset handler -- these
-    used to be two hand-maintained copies of the same loop, which meant the
-    test suite only ever exercised the test-reset copy while the boot copy
-    could drift or break unnoticed (proven by mutating the boot copy: the
-    whole suite stayed green). tests/test_server_boot.py now pins the boot
-    path through this single shared implementation."""
-    result = {}
-    with path.open() as f:
-        for r in csv.DictReader(f):
-            if r["new_album"]:            # non-empty = active correction
-                result[r["uuid"]] = r["new_album"]
-            else:
-                result.pop(r["uuid"], None)   # empty = tombstone
-    return result
-
+# Shared by the boot path below and the /api/test-reset handler -- these used
+# to be two hand-maintained copies of the same replay loop (unified by #32),
+# now the repo-wide single implementation in corrections_log.py (#41).
+# tests/test_server_boot.py pins the boot path through it.
+load_corrections_from_csv = corrections_log.replay
 
 corrections = load_corrections_from_csv(CORRECTIONS)
 

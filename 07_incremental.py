@@ -26,6 +26,8 @@ from pathlib import Path
 
 import numpy as np
 
+import corrections_log
+
 ROOT = Path(os.environ.get("PIXEL_ROOT", str(Path.home() / "photo-sort")))
 INV_CSV = ROOT / "metadata" / "inventory.csv"
 INBOX_CSV = ROOT / "metadata" / "inbox.csv"
@@ -37,7 +39,7 @@ OSX_PYTHON = Path.home() / ".local" / "pipx" / "venvs" / "osxphotos" / "bin" / "
 
 CONF_MAIN = 0.80
 CONF_UNSURE = 0.50
-SKIP_ALBUMS = {"Thrash", "_test_"}
+SKIP_ALBUMS = corrections_log.SKIP_ALBUMS
 MIN_CORR = 3
 WEAK_THRESHOLD = 0.80   # was 0.92 — lowered to match 06_retrain.py
 
@@ -144,14 +146,8 @@ def run_process(regen: bool = True):
                      if r.get("has_local_derivative") == "True" and r.get("derivative_path")]
 
     # Load corrections so we can separate manually sorted from ML-todo
-    manual_album: dict[str, str] = {}
-    if CORRECTIONS_CSV.exists():
-        with CORRECTIONS_CSV.open() as f:
-            for r in csv.DictReader(f):
-                if r.get("new_album"):
-                    manual_album[r["uuid"]] = r["new_album"]
-                else:
-                    manual_album.pop(r["uuid"], None)
+    # (shared replay: last entry wins, tombstones remove earlier entries)
+    manual_album: dict[str, str] = corrections_log.replay(CORRECTIONS_CSV)
 
     # Split: manually sorted → commit; Thrash → skip (wait for Empty Trash); rest → ML
     manual_rows = [r for r in all_with_path
@@ -244,12 +240,13 @@ def run_process(regen: bool = True):
             log.error("scikit-learn not installed")
             sys.exit(2)
 
-        corrections_cl = {}
-        if CORRECTIONS_CSV.exists():
-            with CORRECTIONS_CSV.open() as f:
-                for r in csv.DictReader(f):
-                    if r["new_album"] and r["new_album"] not in SKIP_ALBUMS:
-                        corrections_cl[r["uuid"]] = r["new_album"]
+        # Shared replay with the SKIP_ALBUMS post-filter on the FINAL state.
+        # The previous inline copy filtered row-by-row -- the same divergence
+        # that made 06_retrain resurrect tombstoned/trashed corrections (#34):
+        # a tombstone or a later Thrash entry did not remove the earlier
+        # album, so the classifier trained on corrections the user had
+        # explicitly taken back.
+        corrections_cl = corrections_log.replay_excluding_skip_albums(CORRECTIONS_CSV)
 
         assigned = {}
         with ASSIGN_CSV.open() as f:
