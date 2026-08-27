@@ -21,6 +21,7 @@ metadata/multi_assignments.csv
 metadata/cluster_meta.json
 metadata/empty_albums.txt
 metadata/renames.csv
+metadata/last_retrain.json
 
 # User decisions — personal, should not be committed
 metadata/corrections.csv
