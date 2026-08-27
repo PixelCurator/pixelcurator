@@ -253,7 +253,7 @@ def run_import(dump: dict, dry_run: bool, skip_new: bool) -> dict:
         log.info("Nothing to write — all Photos.app albums already match our assignments.")
         return stats
 
-    ts = dt.datetime.utcnow().isoformat()
+    ts = dt.datetime.now(dt.UTC).isoformat()
     with CORRECTIONS_CSV.open("a", newline="") as f:
         w = csv.writer(f)
         for uuid, album in to_write:

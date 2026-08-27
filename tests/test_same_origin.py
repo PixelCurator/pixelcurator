@@ -14,7 +14,7 @@ that model and are pinned here:
    generated HTML/JS (31 occurrences), which (a) required the CORS
    wildcard to begin with and (b) silently broke every API call and
    image load whenever PIXEL_PORT != 8765 -- including the test servers,
-   which run on 8766+. All URLs are now relative.
+   which run on ephemeral ports. All URLs are now relative.
 """
 import csv
 import subprocess

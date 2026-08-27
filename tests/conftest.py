@@ -1,14 +1,19 @@
 """Shared test fixtures for PixelCurator acceptance tests.
 
-Server integration tests run against a fresh test server on port 8766
-using a temp directory with minimal synthetic data — the live server
-on port 8765 is never touched.
+Server integration tests run against fresh test servers on EPHEMERAL ports
+(PIXEL_PORT=0: the kernel picks a free port, the server announces it on
+stdout) using a temp directory with minimal synthetic data — the live
+server on port 8765 is never touched, and two parallel pytest runs on one
+box no longer collide on a fixed port.
 """
 import csv
 import json
 import os
+import queue
+import re
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -28,9 +33,6 @@ TEST_UUIDS = [
     "DDDDDDDD-0000-0000-0000-000000000004",  # assigned to Yves
     "EEEEEEEE-0000-0000-0000-000000000005",  # inbox photo (not in inventory)
 ]
-
-TEST_PORT = 8766
-
 
 # ── temp root (session-scoped: created once, reused across tests) ─────────────
 
@@ -107,40 +109,90 @@ def temp_root(tmp_path_factory):
 
 # ── test server (session-scoped: started once, shared across tests) ───────────
 
-@pytest.fixture(scope="session")
-def server_url(temp_root):
-    """Start a test server against temp_root on port 8766; yield base URL."""
+_PORT_LINE = re.compile(r"Serving review on http://127\.0\.0\.1:(\d+)/")
+
+
+def start_server_process(root: Path, *, test_mode: bool,
+                         timeout: float = 20.0):
+    """Start server.py against `root` on an EPHEMERAL port and return
+    (proc, base_url).
+
+    PIXEL_PORT=0 makes the kernel pick a free port; the server announces the
+    actual bound port on stdout, which is parsed here. This replaces the old
+    fixed ports 8766/8767, where two parallel pytest runs on one box
+    collided. A pump thread keeps draining stdout afterwards so the child
+    can never block on a full pipe.
+
+    test_mode=True sets PIXEL_TEST_MODE=1 (enables /api/test-reset);
+    boot-path tests pass False so they cannot cheat via test-reset."""
     env = os.environ.copy()
-    env["PIXEL_ROOT"] = str(temp_root)
-    env["PIXEL_PORT"] = str(TEST_PORT)
-    env["PIXEL_TEST_MODE"] = "1"  # enables /api/test-reset endpoint
+    env["PIXEL_ROOT"] = str(root)
+    env["PIXEL_PORT"] = "0"
+    env.pop("PIXEL_TEST_MODE", None)
+    if test_mode:
+        env["PIXEL_TEST_MODE"] = "1"
 
     proc = subprocess.Popen(
         [sys.executable, str(REPO_ROOT / "server.py")],
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
+        text=True,
     )
 
-    # Wait up to 10 s for the server to be ready
-    base = f"http://127.0.0.1:{TEST_PORT}"
-    for _ in range(20):
-        time.sleep(0.5)
+    lines_q: queue.Queue = queue.Queue()
+
+    def _pump():
+        for line in proc.stdout:
+            lines_q.put(line)
+        lines_q.put(None)  # EOF sentinel
+
+    threading.Thread(target=_pump, daemon=True).start()
+
+    seen: list[str] = []
+    port = None
+    deadline = time.monotonic() + timeout
+    while port is None and time.monotonic() < deadline:
         try:
-            urllib.request.urlopen(f"{base}/api/albums", timeout=1)
+            line = lines_q.get(timeout=min(1.0, max(0.05, deadline - time.monotonic())))
+        except queue.Empty:
+            continue
+        if line is None:  # process exited before announcing its port
             break
-        except (urllib.error.URLError, ConnectionRefusedError):
-            pass
-    else:
+        seen.append(line)
+        m = _PORT_LINE.search(line)
+        if m:
+            port = int(m.group(1))
+    if port is None:
         proc.kill()
-        out, _ = proc.communicate()
+        proc.wait()
         raise RuntimeError(
-            f"Test server on port {TEST_PORT} failed to start.\n"
-            f"Output:\n{(out or b'').decode()[:1000]}"
+            "Test server did not announce its port.\n"
+            "Output:\n" + "".join(seen)[:1000]
         )
 
-    yield base
+    # The socket is bound before the announcement, so this is a formality —
+    # but poll readiness anyway to keep the fixture robust.
+    base = f"http://127.0.0.1:{port}"
+    for _ in range(40):
+        try:
+            urllib.request.urlopen(f"{base}/api/albums", timeout=1)
+            return proc, base
+        except (urllib.error.URLError, ConnectionRefusedError, OSError):
+            time.sleep(0.25)
+    proc.kill()
+    proc.wait()
+    raise RuntimeError(
+        f"Test server on {base} never became ready.\n"
+        "Output:\n" + "".join(seen)[:1000]
+    )
 
+
+@pytest.fixture(scope="session")
+def server_url(temp_root):
+    """Start a test server against temp_root on an ephemeral port; yield base URL."""
+    proc, base = start_server_process(temp_root, test_mode=True)
+    yield base
     proc.kill()
     proc.wait()
 

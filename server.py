@@ -142,10 +142,17 @@ def find_similar(uid: str, n: int = 20) -> list:
 
 
 def apply_correction(uid: str, album: str, source: str = "manual") -> str:
-    prev = current_album(uid)
+    """Append one correction row and update the in-memory map; returns the
+    album the uuid had BEFORE this correction (for undo entries).
+
+    The prev read happens inside the lock: two concurrent reassigns of the
+    same uuid (ThreadingHTTPServer spawns a thread per request) could
+    otherwise both read the same prev and produce an undo entry that
+    restores a stale album."""
     with _lock:
+        prev = current_album(uid)
         with CORRECTIONS.open("a", newline="") as f:
-            csv.writer(f).writerow([uid, album, dt.datetime.utcnow().isoformat(), source])
+            csv.writer(f).writerow([uid, album, dt.datetime.now(dt.UTC).isoformat(), source])
         corrections[uid] = album
     return prev
 
@@ -436,9 +443,13 @@ class Handler(BaseHTTPRequestHandler):
             is_undo = self.path == "/api/undo"
             src_stack = _undo_stack if is_undo else _redo_stack
             dst_stack = _redo_stack if is_undo else _undo_stack
-            if not src_stack:
+            try:
+                # Atomic pop instead of check-then-pop: with two concurrent
+                # requests the emptiness check is a TOCTOU and the second
+                # pop() of the maxlen-1 deque raises into a 500.
+                action = src_stack.pop()
+            except IndexError:
                 self._json({"ok": False, "error": "Nothing to " + ("undo" if is_undo else "redo")}); return
-            action = src_stack.pop()
             tag = "undo" if is_undo else "redo"
 
             if action["type"] == "reassign":
@@ -450,7 +461,7 @@ class Handler(BaseHTTPRequestHandler):
                     else:
                         # prev was "" (inbox photo, no prior album) → tombstone = back to unsorted
                         with _lock:
-                            ts = dt.datetime.utcnow().isoformat()
+                            ts = dt.datetime.now(dt.UTC).isoformat()
                             with CORRECTIONS.open("a", newline="") as f:
                                 csv.writer(f).writerow([ch["uuid"], "", ts, tag])
                             corrections.pop(ch["uuid"], None)
@@ -597,7 +608,7 @@ class Handler(BaseHTTPRequestHandler):
             if not uid:
                 self._json({"error": "uuid required"}, 400); return
             with _lock:
-                ts = dt.datetime.utcnow().isoformat()
+                ts = dt.datetime.now(dt.UTC).isoformat()
                 with CORRECTIONS.open("a", newline="") as f:
                     csv.writer(f).writerow([uid, "", ts, "restore"])
                 corrections.pop(uid, None)
@@ -770,7 +781,7 @@ class Handler(BaseHTTPRequestHandler):
             # Write tombstone entries so Thrash doesn't reappear after server restart,
             # then remove from in-memory corrections dict
             with _lock:
-                ts = dt.datetime.utcnow().isoformat()
+                ts = dt.datetime.now(dt.UTC).isoformat()
                 with CORRECTIONS.open("a", newline="") as f:
                     w = csv.writer(f)
                     for u in thrash_uids:
@@ -857,5 +868,9 @@ print(f"Moved {deleted}/{len(uuids)} to Recently Deleted (errors: {errors})")
 '''
 
 if __name__ == "__main__":
-    print(f"Serving review on http://{BIND}:{PORT}/", flush=True)
-    ThreadingHTTPServer((BIND, PORT), Handler).serve_forever()
+    httpd = ThreadingHTTPServer((BIND, PORT), Handler)
+    # With PIXEL_PORT=0 the kernel picks a free ephemeral port; announce the
+    # actual bound port so callers (the test suite) can parse it instead of
+    # hardcoding fixed ports that collide across parallel pytest runs.
+    print(f"Serving review on http://{BIND}:{httpd.server_address[1]}/", flush=True)
+    httpd.serve_forever()

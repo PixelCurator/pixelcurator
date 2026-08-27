@@ -287,7 +287,7 @@ def main():
     if not args.dry_run:
         import datetime as _dt
         checkpoint = {
-            "timestamp": _dt.datetime.utcnow().isoformat(),
+            "timestamp": _dt.datetime.now(_dt.UTC).isoformat(),
             "corrections_count": len(corrections),
         }
         (ROOT / "metadata" / "last_retrain.json").write_text(
