@@ -18,7 +18,13 @@ must be re-embedded (or manually tagged), never silently adopted.
 import json
 from pathlib import Path
 
-MODEL_NAME = "ViT-B-32"
+# OpenAI CLIP weights were trained with the QuickGELU activation; the plain
+# "ViT-B-32" config paired with pretrained="openai" is a documented
+# accuracy-degrading mismatch (open_clip README, mlfoundations/open_clip;
+# open_clip warns about it at every load). Measured on this library (#38):
+# top-10 neighbour overlap 0.745 between the two spaces, 35% different
+# top-1 matches, 84.9% zero-shot label agreement -- the divergence is real.
+MODEL_NAME = "ViT-B-32-quickgelu"
 PRETRAINED = "openai"
 
 

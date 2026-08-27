@@ -15,7 +15,7 @@ On-device AI photo library organizer for macOS Photos.app. Classifies tens of th
 ## What it does
 
 1. **Inventory** the Photos library via [osxphotos](https://github.com/RhetTbull/osxphotos)
-2. **Embed** every photo with OpenAI CLIP ViT-B-32 (Apple Silicon MPS)
+2. **Embed** every photo with OpenAI CLIP ViT-B-32 (QuickGELU config, Apple Silicon MPS)
 3. **NSFW-score** every photo via NudeNet (ONNX, on-device)
 4. **Extract** Apple's face recognition (people + pets) from the Photos DB
 5. **Classify** against user's album taxonomy:

@@ -72,3 +72,14 @@ class TestCheckTag:
         )
         with pytest.raises(model_tag.EmbeddingSpaceMismatchError, match="mismatch"):
             model_tag.check_tag(emb)
+
+
+class TestModelConfigPin:
+    def test_config_is_quickgelu_variant(self):
+        """OpenAI CLIP weights were trained with QuickGELU; loading them via
+        the plain "ViT-B-32" config degrades the whole embedding space
+        (measured: top-10 neighbour overlap 0.745, 35% different top-1
+        matches, see #38). An accidental revert to the plain config must
+        fail CI here, in the fast lane, on every PR."""
+        assert model_tag.MODEL_NAME == "ViT-B-32-quickgelu"
+        assert model_tag.PRETRAINED == "openai"
