@@ -7,6 +7,10 @@ __pycache__/
 # Generated large artifacts — regenerable from Photos library
 embeddings/*.npy
 embeddings/*.json
+embeddings/*.bak
+
+# Local pre-migration backups (e.g. the pre-QuickGELU space, #38)
+metadata/*.bak
 
 # User-specific metadata (UUIDs, paths, scores tied to one library)
 metadata/inventory.csv
