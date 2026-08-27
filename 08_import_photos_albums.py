@@ -127,8 +127,12 @@ def run_dump() -> dict:
 
 # ── import (match + write corrections) ───────────────────────────────────────
 
-def run_import(dump: dict, dry_run: bool, skip_new: bool) -> None:
-    """Match Photos.app albums → our albums; write corrections."""
+def run_import(dump: dict, dry_run: bool, skip_new: bool) -> dict:
+    """Match Photos.app albums → our albums; write corrections.
+
+    Returns the stats counters (skipped_manual / matched / new_album /
+    no_match / already_correct) so the acceptance tests can assert on
+    them directly instead of re-implementing the matching logic."""
     log.info("=== Phase 2: Import album assignments ===")
     uuid_albums: dict[str, list[str]] = dump["uuid_albums"]
     pa_album_counts: dict[str, int] = dump["album_counts"]
@@ -243,11 +247,11 @@ def run_import(dump: dict, dry_run: bool, skip_new: bool) -> None:
             log.info("  %s…  %s → %s", uuid[:8], old, album)
         if len(to_write) > 20:
             log.info("  … and %d more", len(to_write) - 20)
-        return
+        return stats
 
     if not to_write:
         log.info("Nothing to write — all Photos.app albums already match our assignments.")
-        return
+        return stats
 
     ts = dt.datetime.utcnow().isoformat()
     with CORRECTIONS_CSV.open("a", newline="") as f:
@@ -256,6 +260,7 @@ def run_import(dump: dict, dry_run: bool, skip_new: bool) -> None:
             w.writerow([uuid, album, ts, "photos_app"])
     log.info("Wrote %d corrections to %s", len(to_write), CORRECTIONS_CSV)
     log.info("=== Import complete ===")
+    return stats
 
 
 # ── main ──────────────────────────────────────────────────────────────────────
