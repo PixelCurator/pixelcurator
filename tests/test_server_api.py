@@ -332,3 +332,101 @@ class TestRetrainStatus:
               {"uuid": TEST_UUIDS[0], "new_album": "Thrash"})
         result = _get(f"{server_url}/api/retrain-status")
         assert result["new_since_retrain"] == 0
+
+
+class TestSimilar:
+    """GET /api/similar — previously untested (a rewrite of find_similar()
+    could have returned garbage without any test noticing)."""
+
+    def test_similar_returns_ordered_neighbours_excluding_self(self, server_url):
+        uid = TEST_UUIDS[0]
+        data = _get(f"{server_url}/api/similar?uuid={uid}&n=3")
+        assert data["uuid"] == uid
+        results = data["similar"]
+        assert 1 <= len(results) <= 3
+        uuids = [r["uuid"] for r in results]
+        scores = [r["score"] for r in results]
+        assert uid not in uuids, "query photo must not appear in its own results"
+        assert scores == sorted(scores, reverse=True), (
+            "results must be ordered by descending similarity"
+        )
+        assert all(-1.001 <= s <= 1.001 for s in scores), (
+            "embeddings are L2-normalised, so scores are cosines in [-1, 1]"
+        )
+
+    def test_similar_n_larger_than_library_returns_all_others(self, server_url):
+        """n beyond the library size must not crash the top-k selection."""
+        uid = TEST_UUIDS[0]
+        data = _get(f"{server_url}/api/similar?uuid={uid}&n=500")
+        uuids = [r["uuid"] for r in data["similar"]]
+        assert uid not in uuids
+        assert len(uuids) == 4  # 5 embedded photos minus the query itself
+
+    def test_similar_unknown_uuid_yields_empty(self, server_url):
+        data = _get(f"{server_url}/api/similar?uuid=NOT-A-UUID&n=5")
+        assert data["similar"] == []
+
+
+def test_find_similar_matches_naive_full_sort(tmp_path, monkeypatch):
+    """Property test at unit level: find_similar() must return exactly the
+    same uuids in the same order as a naive full argsort, on a library big
+    enough (64) that a wrong top-k selection cannot pass by coincidence
+    (the 5-photo API sandbox above can). Imports server.py fresh against
+    its own sandbox -- module import only boots state; serve_forever() is
+    behind the __main__ guard."""
+    import importlib.util
+
+    import numpy as np
+
+    root = tmp_path / "root"
+    meta = root / "metadata"
+    emb_dir = root / "embeddings"
+    review = root / "review"
+    for d in (meta, emb_dir, review):
+        d.mkdir(parents=True)
+
+    n_lib = 64
+    uuids = [f"UUID-{i:04d}" for i in range(n_lib)]
+    with (meta / "inventory.csv").open("w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["uuid", "original_filename", "date", "ismissing",
+                    "has_local_original", "has_local_derivative",
+                    "derivative_path", "derivative_size_bytes",
+                    "uti_original", "isphoto", "ismovie"])
+        for uid in uuids:
+            w.writerow([uid, f"{uid}.jpg", "2024-01-01", "False", "False",
+                        "True", f"/fake/{uid}.jpg", "1", "", "True", "False"])
+    with (meta / "assignments.csv").open("w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["uuid", "album", "confidence", "source"])
+        for uid in uuids:
+            w.writerow([uid, "Diverses", "0.6", "retrain"])
+
+    rng = np.random.default_rng(123)
+    emb = rng.standard_normal((n_lib, 512)).astype(np.float32)
+    emb /= np.linalg.norm(emb, axis=1, keepdims=True)
+    np.save(emb_dir / "clip_vitb32.npy", emb)
+    (emb_dir / "clip_vitb32_uuids.json").write_text(json.dumps(uuids))
+
+    monkeypatch.setenv("PIXEL_ROOT", str(root))
+    spec = importlib.util.spec_from_file_location(
+        "server_under_test", Path(__file__).resolve().parent.parent / "server.py"
+    )
+    srv = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(srv)
+
+    for query_idx in (0, 17, 63):
+        uid = uuids[query_idx]
+        for n in (1, 5, 20, 200):
+            got = srv.find_similar(uid, n=n)
+            sims = emb @ emb[query_idx]
+            expected = [
+                (uuids[j], float(sims[j]))
+                for j in np.argsort(-sims)
+                if uuids[j] != uid
+            ][:n]
+            assert [u for u, _ in got] == [u for u, _ in expected], (
+                f"uuid order diverges from naive full sort (uid={uid}, n={n})"
+            )
+            got_scores = [s for _, s in got]
+            assert got_scores == sorted(got_scores, reverse=True)
