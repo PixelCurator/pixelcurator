@@ -1,5 +1,5 @@
 # Core ML
-torch>=2.13.0
+torch>=2.14.0
 torchvision>=0.29.0
 open_clip_torch>=3.3
 Pillow>=12.3.0
