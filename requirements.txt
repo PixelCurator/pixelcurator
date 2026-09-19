@@ -10,7 +10,7 @@ nudenet>=3.4.2
 onnxruntime>=1.30.0
 
 # Clustering / retraining
-scikit-learn>=1.9
+scikit-learn>=1.9.1
 
 # Photos.app access is installed separately via pipx:
 #   pipx install osxphotos
